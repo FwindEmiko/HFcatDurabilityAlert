@@ -73,6 +73,7 @@ import java.util.function.Supplier;
  *   （显式启用 hexColors + useUnusualXRepeatedCharacterHexFormat，不依赖运行时 Provider 注入）
  * - sendMessage / sendActionBar / showTitle / Registry.SOUND_EVENT
  */
+@SuppressWarnings("SpellCheckingInspection")
 public class DurabilityListener implements Listener {
 
     /** 兜底检查的盔甲槽位 */
@@ -146,7 +147,7 @@ public class DurabilityListener implements Listener {
 
         for (EquipmentSlot slot : ARMOR_SLOTS) {
             ItemStack armor = player.getInventory().getItem(slot);
-            if (armor == null || armor.getType() == Material.AIR) continue;
+            if (armor.getType() == Material.AIR) continue;
             if (armor.getAmount() > 1) continue;
             checkAndWarn(player, armor, slot, config, 0);
         }
@@ -199,18 +200,18 @@ public class DurabilityListener implements Listener {
      * @param extraDamage 本次事件将要应用的损伤（主监听传 event.getDamage()，兜底传 0）
      * @return 是否发送了警告（供调试）
      */
-    private boolean checkAndWarn(Player player, ItemStack item, EquipmentSlot slot,
+    private void checkAndWarn(Player player, ItemStack item, EquipmentSlot slot,
                                  FileConfiguration config, int extraDamage) {
         ItemMeta meta = item.getItemMeta();
         if (meta == null) {
             debug(() -> player.getName() + " item has no meta, skipped");
-            return false;
+            return;
         }
 
         // 无耐久物品：非 Damageable 或没有损伤值时跳过
         if (!(meta instanceof Damageable damageable) || !damageable.hasDamage()) {
             debug(() -> player.getName() + " item " + item.getType() + " has no durability damage, skipped");
-            return false;
+            return;
         }
 
         // ✅ 正确读取组件 max_damage（优先），否则回退类型默认值
@@ -219,7 +220,7 @@ public class DurabilityListener implements Listener {
                 : item.getType().getMaxDurability();
         if (maxDamage <= 0) {
             debug(() -> player.getName() + " item " + item.getType() + " is unbreakable (max<=0), skipped");
-            return false; // 不可破坏或无耐久
+            return; // 不可破坏或无耐久
         }
 
         // ✅ damage 是「已损失」，不是剩余；主路径按本次扣减后的状态判定
@@ -228,7 +229,7 @@ public class DurabilityListener implements Listener {
         int remaining = maxDamage - damage;
         if (remaining <= 0) {
             debug(() -> player.getName() + " item " + item.getType() + " will break this hit, threshold warn skipped");
-            return false;
+            return;
         }
 
         double percent = (double) remaining / maxDamage * 100.0;
@@ -236,7 +237,7 @@ public class DurabilityListener implements Listener {
         // 忽略列表
         if (isIgnored(item.getType(), config)) {
             debug(() -> player.getName() + " item " + item.getType() + " in ignore-items, skipped");
-            return false;
+            return;
         }
 
         // 经验修补：有修补的物品仅在达到/低于 mending-only-warn-below 时警告（0 与 -1 均视为禁用）
@@ -247,7 +248,7 @@ public class DurabilityListener implements Listener {
         if (mendingActive && percent > mendingOnlyBelow) {
             debug(() -> player.getName() + " item " + item.getType() + " has mending, percent=" + (int) percent
                     + " > " + mendingOnlyBelow + ", skipped");
-            return false;
+            return;
         }
 
         // 修复重置（DESIGN 4.2 方案A）：当前百分比回升到上次警告阈值之上 → 清除标记
@@ -271,7 +272,7 @@ public class DurabilityListener implements Listener {
         thresholds.sort((a, b) -> b - a); // 降序
         if (thresholds.isEmpty()) {
             debug(() -> player.getName() + " no valid thresholds, skipped");
-            return false;
+            return;
         }
 
         for (int threshold : thresholds) {
@@ -295,10 +296,10 @@ public class DurabilityListener implements Listener {
                 lastWarnTick.put(dedupKey, tick);
                 debug(() -> player.getName() + " warned for " + item.getType() + " threshold " + threshold
                         + " percent " + (int) percent);
-                return true; // 每次事件只发一条警告
+                return; // 每次事件只发一条警告
             }
         }
-        return false;
+        return;
     }
 
     /**
@@ -357,12 +358,12 @@ public class DurabilityListener implements Listener {
     /** 读取时优先取玩家身上真实物品；匹配失败时回退事件物品（两者共享 NMS handle） */
     private ItemStack liveItemOrFallback(Player player, EquipmentSlot slot, ItemStack item) {
         ItemStack live = liveItemInSlot(player, slot);
-        if (live != null && isSameItem(live, item)) return live;
+        if (isSameItem(live, item)) return live;
         return item;
     }
 
     /** 取玩家槽位中的实时物品 */
-    private @Nullable ItemStack liveItemInSlot(Player player, EquipmentSlot slot) {
+    private ItemStack liveItemInSlot(Player player, EquipmentSlot slot) {
         return switch (slot) {
             case HAND -> player.getInventory().getItemInMainHand();
             case OFF_HAND -> player.getInventory().getItemInOffHand();
@@ -370,11 +371,6 @@ public class DurabilityListener implements Listener {
         };
     }
 
-    /** 物品上是否已有警告标记 */
-    private boolean hasWarnMarker(Player player, EquipmentSlot slot, ItemStack item) {
-        ItemMeta meta = liveItemOrFallback(player, slot, item).getItemMeta();
-        return meta != null && meta.getPersistentDataContainer().has(lastWarnKey, PersistentDataType.INTEGER);
-    }
 
     /** 读取上次警告的阈值（无标记返回 -1） */
     private int readLastWarned(Player player, EquipmentSlot slot, ItemStack item) {
@@ -437,7 +433,7 @@ public class DurabilityListener implements Listener {
     }
 
     /** 从配置中查找阈值对应的消息格式，找不到则用通用回退 */
-    private @Nullable String findThresholdMessage(int threshold, FileConfiguration config) {
+    private String findThresholdMessage(int threshold, FileConfiguration config) {
         var section = config.getMapList("messages.formats");
         for (var entry : section) {
             Object pct = entry.get("percent");
@@ -469,7 +465,7 @@ public class DurabilityListener implements Listener {
 
         // 声音是独立输出通道，不受 send-* 开关影响
         String soundStr = config.getString("messages.warning-sound", "");
-        if (soundStr != null && !soundStr.isEmpty()) {
+        if (!soundStr.isEmpty()) {
             playSound(player, soundStr);
         }
     }
@@ -497,10 +493,10 @@ public class DurabilityListener implements Listener {
                 return;
             }
             float volume = parts.length > 1
-                    ? parseSoundParam(parts[1], SOUND_VOLUME_MIN, SOUND_VOLUME_MAX, 1.0f)
+                    ? parseSoundParam(parts[1], SOUND_VOLUME_MIN, SOUND_VOLUME_MAX)
                     : 1.0f;
             float pitch = parts.length > 2
-                    ? parseSoundParam(parts[2], SOUND_PITCH_MIN, SOUND_PITCH_MAX, 1.0f)
+                    ? parseSoundParam(parts[2], SOUND_PITCH_MIN, SOUND_PITCH_MAX)
                     : 1.0f;
             player.playSound(player.getLocation(), sound, volume, pitch);
         } catch (IllegalArgumentException e) {
@@ -511,13 +507,13 @@ public class DurabilityListener implements Listener {
     }
 
     /** 解析声音参数并钳制到 [min,max]；NaN/非法数字回退默认值 */
-    private static float parseSoundParam(String raw, float min, float max, float fallback) {
+    private static float parseSoundParam(String raw, float min, float max) {
         try {
             float value = Float.parseFloat(raw);
-            if (Float.isNaN(value)) return fallback;
-            return Math.max(min, Math.min(max, value));
+            if (Float.isNaN(value)) return 1.0f;
+            return Math.clamp(value, min, max);
         } catch (NumberFormatException e) {
-            return fallback;
+            return 1.0f;
         }
     }
 
@@ -528,17 +524,18 @@ public class DurabilityListener implements Listener {
      */
     private Component getItemDisplayNameComponent(ItemStack item) {
         ItemMeta meta = item.getItemMeta();
-        if (meta == null) return Component.text(formatMaterialName(item.getType()));
-
-        // 1) 自定义名（铁砧重命名或 /data）
-        if (meta.hasDisplayName()) {
+        // 1) 自定义名（铁砧重命名或 /data）优先
+        if (meta != null && meta.hasDisplayName()) {
             return meta.displayName();
         }
-
-        // 2) 默认物品名：TranslatableComponent，客户端按语言渲染
-        //    数据包物品的翻译键（如 "stellarity:item.hallowed_helmet"）也由客户端负责解析
-        Component defaultName = meta.itemName();
-        return defaultName != null ? defaultName : Component.text(formatMaterialName(item.getType()));
+        // 2) 数据包物品的自定义 item_name（如 Stellarity 的翻译键）
+        if (meta != null && meta.hasItemName()) {
+            return meta.itemName();
+        }
+        // 3) 默认：使用物品的翻译键，客户端自动按语言渲染
+        // getItemTranslationKey() 可能为 null（非物品 Material），此时回退到英文名
+        String key = item.getType().getItemTranslationKey();
+        return key != null ? Component.translatable(key) : Component.text(formatMaterialName(item.getType()));
     }
 
     /** 将 Material 枚举名转为 Title Case（如 IRON_HELMET → "Iron Helmet"） */
