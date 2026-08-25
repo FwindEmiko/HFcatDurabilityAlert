@@ -288,7 +288,7 @@ public class DurabilityListener implements Listener {
                 int tick = Bukkit.getCurrentTick();
                 if (lastWarnTick.getOrDefault(dedupKey, -1) == tick) {
                     debug(() -> player.getName() + " already warned this tick for " + slot + ", skip");
-                    return false;
+                    return;
                 }
 
                 sendThresholdWarning(player, item, slot, remaining, maxDamage, (int) percent, threshold, config);
