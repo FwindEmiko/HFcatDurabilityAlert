@@ -1,0 +1,21 @@
+name: HFcatDurabilityAlert
+main: io.github.fcestial.hfcatdurabilityalert.HFcatDurabilityAlert
+version: '1.0.0'
+api-version: '26.2'
+author: FCelestial
+description: 装备耐久度警告插件，基于1.20.5+组件系统精确读取耐久
+
+commands:
+  hfcatdurabilityalert:
+    description: HFcatDurabilityAlert 管理命令（reload/status/help）
+    usage: /hfcatdurabilityalert [reload|status|help]
+    aliases: [hdura, hdalert]
+    permission: hfcatdurabilityalert.admin
+
+permissions:
+  hfcatdurabilityalert.admin:
+    description: 允许重载插件配置
+    default: op
+  hfcatdurabilityalert.use:
+    description: 允许接收耐久警告
+    default: true
