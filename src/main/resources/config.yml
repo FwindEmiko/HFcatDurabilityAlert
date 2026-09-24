@@ -1,9 +1,13 @@
-# HFcatDurabilityAlert 配置文件
-# =========================================
+# ============================================
+#  HFcatDurabilityAlert 耐久度警告插件 配置文件
+#  狐风轩汐 - F.windEmiko
+#  QQ: 2011857087
+# ============================================
 
-# 警告阈值列表（百分比，0-100，表示剩余耐久百分比）
-# 从高到低排列，每个阈值在物品降到该百分比时触发一次警告
+# ---------- 警告触发条件 ----------
 warnings:
+  # 警告阈值（剩余耐久百分比 0-100）
+  # 从高到低排列，物品耐久每降到一个阈值就触发一次警告
   thresholds:
     - 50
     - 30
@@ -11,30 +15,29 @@ warnings:
     - 10
     - 5
 
-  # 重复警告冷却（秒）。当前版本仅支持 -1：每个阈值只警告一次
-  # 正数（按冷却时间重复警告）将在未来版本实现，配置后插件会给出告警并按 -1 处理
+  # 同一阈值的重复警告间隔（秒）
+  # -1 表示每个阈值只警告一次；当前版本仅支持 -1，填正数会按 -1 处理并给出提示
   cooldown: -1
 
-  # 检查范围
-  check-armor: true      # 盔甲槽位（头/胸/腿/脚）
+  # 检测哪些部位的物品
+  check-armor: true      # 盔甲（头盔/胸甲/护腿/靴子）
   check-mainhand: true   # 主手
   check-offhand: true    # 副手
 
-  # 完全忽略的物品（Material 名称，不区分大小写）
+  # 完全忽略的物品（填物品英文名称，不区分大小写）
+  # 例如: - "elytra"  - "shield"
   ignore-items: []
-    # - "elytra"
-    # - "shield"
 
-# 消息配置
+# ---------- 消息显示 ----------
 messages:
-  # 警告消息格式，支持占位符:
-  #   {item}      - 物品名称（自定义名优先，否则用类型名）
-  #   {slot}      - 装备槽位名称（主手/副手/头盔/胸甲/护腿/靴子）
-  #   {durability} - 剩余耐久点数
-  #   {max}       - 最大耐久点数
-  #   {percent}   - 剩余百分比（整数）
-  #   {threshold} - 触发的阈值百分比
-  # 颜色代码用 & 前缀（&a, &c, &l 等）或 MiniMessage 标签
+  # 每个阈值对应的警告文案，格式见下方占位符说明
+  #   {item}      物品名称（有自定义名优先显示自定义名）
+  #   {slot}      装备部位（主手/副手/头盔/胸甲/护腿/靴子）
+  #   {durability} 剩余耐久点数
+  #   {max}       最大耐久点数
+  #   {percent}   剩余耐久百分比（整数）
+  #   {threshold} 触发的阈值百分比
+  # 颜色支持 & 代码（&a &c &l 等）或 MiniMessage 标签
   formats:
     - percent: 50
       message: "&e⚠ &f{item} &e耐久度已降至 &6{percent}%&e！ &7({durability}/{max})"
@@ -45,26 +48,27 @@ messages:
     - percent: 10
       message: "&4⚠ &f{item} &4即将损坏！ &7仅剩 {percent}% &8({durability}/{max})"
     - percent: 5
-      message: "&4&l!!! &f{item} &4&l马上要断了！ &7仅剩 {percent}% &8({durability}/{max})"
+      message: "&4&l!!! &f{item} &4&l马上要坏掉啦！ &7仅剩 {percent}% &8({durability}/{max})"
 
-  # 警告显示方式
-  send-chat: true        # 在聊天框显示
-  send-actionbar: true   # 在动作栏显示
-  send-title: false      # 用 Title 显示（屏幕中央大字）
+  # 警告的显示位置（可同时开启多项）
+  send-chat: true        # 聊天框
+  send-actionbar: true   # 动作栏（经验条上方）
+  send-title: false      # 屏幕中央大字 Title
 
-  # 物品完全损坏（耐久归零）时发送的最终警告
+  # 物品彻底损坏（耐久归零）时的提示文案，留空则不提示
   break-message: "&4&l!!! &f{item} &4&l已损坏！"
 
-  # 警告时播放的声音（留空禁用；物品断裂的最终警告也会播放此声音）
-  # 格式: SOUND_NAME 或 SOUND_NAME:音量:音调（仅支持 Bukkit 声音名，不支持 minecraft: 前缀）
-  # 例: ENTITY_EXPERIENCE_ORB_PICKUP:1.0:1.0
+  # 警告时播放的声音，留空则不播放（物品损坏时也会播放此声音）
+  # 格式: 声音名 或 声音名:音量:音调，仅用 Bukkit 声音名、不带 minecraft: 前缀
+  # 例如: ENTITY_EXPERIENCE_ORB_PICKUP:1.0:1.0
   warning-sound: "ENTITY_EXPERIENCE_ORB_PICKUP:0.8:1.2"
 
-# 经验修补特殊处理
+# ---------- 经验修补（Mending）特殊处理 ----------
 mending:
-  # 有经验修补的物品，仅在耐久达到或低于此百分比时才警告（覆盖上面所有阈值，只使用 <= 此值的阈值档位）
-  # 设为 -1 或 0 禁用此特殊处理（使用通用阈值）
+  # 带"经验修补"附魔的物品延迟警告：耐久降到此百分比以下才提示
+  # 会覆盖上方通用阈值，仅使用 <= 此值的档位；设为 -1 或 0 关闭此功能
   mending-only-warn-below: 5
 
-# 调试模式（输出详细日志到控制台）
+# ---------- 调试 ----------
+# 开启后向控制台输出详细日志，一般仅在开发者排查问题时开启
 debug: false

@@ -1,18 +1,45 @@
-# Gradle
+# ============================================
+#  HFcatDurabilityAlert .gitignore
+#  Gradle + Java (Paper 插件) 公开仓库排除规则
+# ============================================
+
+# ---------- Gradle ----------
 .gradle/
 build/
+**/build/
 !gradle/wrapper/gradle-wrapper.jar
+.kotlin/
 
-# IDE
+# ---------- Java ----------
+*.class
+*.log
+*.ctxt
+hs_err_pid*
+replay_pid*
+
+# ---------- IDE: IntelliJ IDEA ----------
 .idea/
 *.iml
 *.ipr
 *.iws
-.vscode/
+out/
+
+# ---------- IDE: Eclipse / VS Code ----------
 .settings/
 .project
 .classpath
+.factorypath
+.vscode/
 
-# OS
+# ---------- OS ----------
 .DS_Store
+.DS_Store?
+._*
 Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ---------- 本地 / 敏感覆盖（不提交） ----------
+.env
+*.local
+local.properties
