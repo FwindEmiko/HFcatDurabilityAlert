@@ -256,11 +256,13 @@ private void markWarnedThreshold(ItemStack item, int threshold) {
 
 ```yaml
 # 重复警告冷却（秒），-1 表示每个阈值只警告一次
+# >0 表示同一阈值冷却 N 秒后可重复警告（无需修复）
 cooldown: -1
 ```
 
 `-1` = 每个阈值只警告一次（PDC 标记法）
-`> 0` = 冷却时间后可重复警告（未来版本可扩展为时间戳存储）
+`> 0` = 冷却时间后可重复警告（PDC 按阈值存储最近警告时间戳）
+`0` 或小于 `-1` = 无效值，按 `-1` 处理并告警
 
 ---
 
@@ -451,7 +453,6 @@ gradlew.bat shadowJar
 - **Folia 支持**：使用 `Plugin.getRegionScheduler()` 替代直接调用
 - **MiniMessage 格式**：将 `&` 颜色代码替换为 MiniMessage 标签
 - **Unbreaking 智能阈值**：根据耐久附魔等级动态调整警告阈值
-- **Cooldown 时间戳**：实现冷却时间内的重复警告（当前仅支持一次性）
 - **PlaceholderAPI 集成**：将耐久信息暴露给其他插件
 - **CraftEngine 物品识别**：通过 CE 的 custom_data 识别自定义物品类型
 

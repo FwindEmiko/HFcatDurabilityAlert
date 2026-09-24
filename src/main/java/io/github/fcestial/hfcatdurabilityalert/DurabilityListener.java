@@ -57,9 +57,11 @@ import java.util.function.Supplier;
  * 防重复（DESIGN 第四节）：
  * - PDC 在「玩家身上真实的物品」上记录 last_warn_threshold
  *   （PlayerItemDamageEvent 携带的 ItemStack 与实物共享 NMS handle，但统一写实物更可靠）
- * - 每个阈值只警告一次：降序遍历阈值，已警告的档位 continue 到更低档，命中未警告档位后警告并结束本次事件
+ * - cooldown=-1：每个阈值只警告一次（降序遍历阈值，已警告的档位 continue 到更低档，
+ *   命中未警告档位后警告并结束本次事件）
  *   （注：DESIGN.md 第六节流程图写的是「已警告→结束」，与第四节「每个阈值各触发一次」意图矛盾，
  *    本实现按第四节意图采用 continue 级联，见 MEMORY.md）
+ * - cooldown>0：同一阈值按冷却时间可重复警告；每个阈值单独记录最近警告时间戳（PDC STRING）
  * - 物品被修复（当前百分比回升到上次警告阈值之上）时清除 PDC 标记，允许重新触发（DESIGN 4.2 方案A）
  * - 同 tick 内同一玩家同一槽位只发一条警告（EntityDamageEvent 兜底与 PlayerItemDamageEvent
  *   同 tick 连续触发时，防止一次损伤跨两个阈值连发两条）
@@ -101,6 +103,7 @@ public class DurabilityListener implements Listener {
 
     private final HFcatDurabilityAlert plugin;
     private final NamespacedKey lastWarnKey;
+    private final NamespacedKey lastWarnTimesKey;
 
     /** 同 tick 去重：playerUuid:slotName → server tick（主线程独占，见类注释） */
     private final Map<String, Integer> lastWarnTick = new HashMap<>();
@@ -108,6 +111,7 @@ public class DurabilityListener implements Listener {
     public DurabilityListener(HFcatDurabilityAlert plugin) {
         this.plugin = plugin;
         this.lastWarnKey = new NamespacedKey("hfcatdurabilityalert", "last_warn_threshold");
+        this.lastWarnTimesKey = new NamespacedKey("hfcatdurabilityalert", "last_warn_times");
     }
 
     /**
@@ -251,15 +255,24 @@ public class DurabilityListener implements Listener {
             return;
         }
 
-        // 修复重置（DESIGN 4.2 方案A）：当前百分比回升到上次警告阈值之上 → 清除标记
-        // 注意：重置后可能立即以「最高 <= 当前百分比的档位」重发警告（如 30% 修复到 45% 会触发 50 档），
-        // 这是方案书 4.2 方案A 的既定语义，已在 MEMORY.md 记录
-        int lastWarned = readLastWarned(player, slot, item);
-        if (lastWarned >= 0 && percent > lastWarned) {
-            final int repairedFrom = lastWarned; // lambda 需要 effectively final 副本
-            removeWarnMarker(player, slot, item);
-            debug(() -> player.getName() + " item repaired above " + repairedFrom + "%, warn marker reset");
-            lastWarned = -1;
+        // 冷却模式：-1 为每阈值只警告一次；正数为同阈值可重复警告的间隔秒数
+        int cooldown = config.getInt("warnings.cooldown", -1);
+        boolean repeatable = cooldown > 0;
+
+        // 修复重置：
+        // - cooldown=-1：当前百分比回升到上次警告阈值之上 → 清除 PDC 标记（DESIGN 4.2 方案A）
+        // - cooldown>0：耐久回升到某阈值之上时清除该阈值的时间戳，使其可重新触发
+        int lastWarned = -1;
+        if (repeatable) {
+            clearWarnTimesAbove(player, slot, item, percent);
+        } else {
+            lastWarned = readLastWarned(player, slot, item);
+            if (lastWarned >= 0 && percent > lastWarned) {
+                final int repairedFrom = lastWarned; // lambda 需要 effectively final 副本
+                removeWarnMarker(player, slot, item);
+                debug(() -> player.getName() + " item repaired above " + repairedFrom + "%, warn marker reset");
+                lastWarned = -1;
+            }
         }
 
         // 阈值列表：过滤越界值 → 降序 → mending 生效时只保留 <= 修补阈值的档位
@@ -275,14 +288,28 @@ public class DurabilityListener implements Listener {
             return;
         }
 
+        long now = System.currentTimeMillis();
+        long cooldownMillis = repeatable ? cooldown * 1000L : 0L;
+
         for (int threshold : thresholds) {
             if (percent <= threshold) {
-                // 该档位已警告过 → 继续检查更低档位（级联）
-                if (lastWarned >= 0 && threshold >= lastWarned) {
-                    debug(() -> player.getName() + " item " + item.getType() + " already warned for threshold "
-                            + threshold + ", try next lower");
-                    continue;
+                if (repeatable) {
+                    // 同阈值冷却中 → 继续检查更低档位（级联）
+                    Long lastTime = readWarnTime(player, slot, item, threshold);
+                    if (lastTime != null && now - lastTime < cooldownMillis) {
+                        debug(() -> player.getName() + " item " + item.getType() + " threshold " + threshold
+                                + " is on cooldown, try next lower");
+                        continue;
+                    }
+                } else {
+                    // 该档位已警告过 → 继续检查更低档位（级联）
+                    if (lastWarned >= 0 && threshold >= lastWarned) {
+                        debug(() -> player.getName() + " item " + item.getType() + " already warned for threshold "
+                                + threshold + ", try next lower");
+                        continue;
+                    }
                 }
+
                 // 同 tick 去重：兜底事件与主事件同 tick 连发时只发一条
                 String dedupKey = player.getUniqueId() + ":" + slot.name();
                 int tick = Bukkit.getCurrentTick();
@@ -292,7 +319,11 @@ public class DurabilityListener implements Listener {
                 }
 
                 sendThresholdWarning(player, item, slot, remaining, maxDamage, (int) percent, threshold, config);
-                markWarnedThreshold(player, slot, item, threshold);
+                if (repeatable) {
+                    markWarnedCooldown(player, slot, item, threshold, now);
+                } else {
+                    markWarnedThreshold(player, slot, item, threshold);
+                }
                 lastWarnTick.put(dedupKey, tick);
                 debug(() -> player.getName() + " warned for " + item.getType() + " threshold " + threshold
                         + " percent " + (int) percent);
@@ -394,6 +425,103 @@ public class DurabilityListener implements Listener {
                 .editMeta(meta -> meta.getPersistentDataContainer()
                         .set(lastWarnKey, PersistentDataType.INTEGER, threshold));
     }
+
+    // ---------- 同阈值冷却时间戳（cooldown > 0 时使用） ----------
+
+    /** 读取某阈值最近一次警告的时间戳（无记录返回 null） */
+    private @Nullable Long readWarnTime(Player player, EquipmentSlot slot, ItemStack item, int threshold) {
+        String data = readWarnTimesRaw(player, slot, item);
+        if (data == null || data.isEmpty()) return null;
+        for (String entry : data.split(",")) {
+            int sep = entry.indexOf('=');
+            if (sep <= 0) continue;
+            try {
+                if (Integer.parseInt(entry.substring(0, sep)) == threshold) {
+                    return Long.parseLong(entry.substring(sep + 1));
+                }
+            } catch (NumberFormatException ignored) {
+                // 跳过损坏的旧数据
+            }
+        }
+        return null;
+    }
+
+    /** 读取冷却时间戳原始字符串（无记录返回 null） */
+    private @Nullable String readWarnTimesRaw(Player player, EquipmentSlot slot, ItemStack item) {
+        ItemMeta meta = liveItemOrFallback(player, slot, item).getItemMeta();
+        if (meta == null) return null;
+        return meta.getPersistentDataContainer().get(lastWarnTimesKey, PersistentDataType.STRING);
+    }
+
+    /**
+     * 记录某阈值的警告时间戳（cooldown > 0）。
+     * 同时保留 last_warn_threshold 整数标记，便于配置切回 -1 时仍有一致的一次性状态。
+     */
+    private void markWarnedCooldown(Player player, EquipmentSlot slot, ItemStack item, int threshold, long now) {
+        Map<Integer, Long> times = parseWarnTimes(readWarnTimesRaw(player, slot, item));
+        times.put(threshold, now);
+        String serialized = serializeWarnTimes(times);
+        liveItemOrFallback(player, slot, item)
+                .editMeta(meta -> {
+                    meta.getPersistentDataContainer().set(lastWarnTimesKey, PersistentDataType.STRING, serialized);
+                    meta.getPersistentDataContainer().set(lastWarnKey, PersistentDataType.INTEGER, threshold);
+                });
+    }
+
+    /** 耐久回升到某阈值之上时，清除该阈值的冷却时间戳，使其可重新触发 */
+    private void clearWarnTimesAbove(Player player, EquipmentSlot slot, ItemStack item, double percent) {
+        String data = readWarnTimesRaw(player, slot, item);
+        if (data == null || data.isEmpty()) return;
+        Map<Integer, Long> times = parseWarnTimes(data);
+        boolean changed = times.keySet().removeIf(t -> percent > t);
+        if (!changed) return;
+        ItemStack live = liveItemOrFallback(player, slot, item);
+        if (times.isEmpty()) {
+            live.editMeta(meta -> {
+                meta.getPersistentDataContainer().remove(lastWarnTimesKey);
+                meta.getPersistentDataContainer().remove(lastWarnKey);
+            });
+        } else {
+            int lowestWarned = Integer.MAX_VALUE;
+            for (int t : times.keySet()) {
+                lowestWarned = Math.min(lowestWarned, t);
+            }
+            final int legacyMarker = lowestWarned;
+            live.editMeta(meta -> {
+                meta.getPersistentDataContainer()
+                        .set(lastWarnTimesKey, PersistentDataType.STRING, serializeWarnTimes(times));
+                meta.getPersistentDataContainer().set(lastWarnKey, PersistentDataType.INTEGER, legacyMarker);
+            });
+        }
+    }
+
+    /** 解析 PDC 中的阈值→时间戳映射（格式: "50=1710000000123,30=1710000000456"） */
+    private static Map<Integer, Long> parseWarnTimes(@Nullable String data) {
+        Map<Integer, Long> times = new HashMap<>();
+        if (data == null || data.isEmpty()) return times;
+        for (String entry : data.split(",")) {
+            int sep = entry.indexOf('=');
+            if (sep <= 0) continue;
+            try {
+                times.put(Integer.parseInt(entry.substring(0, sep)),
+                        Long.parseLong(entry.substring(sep + 1)));
+            } catch (NumberFormatException ignored) {
+                // 跳过损坏的旧数据
+            }
+        }
+        return times;
+    }
+
+    /** 序列化阈值→时间戳映射为 PDC STRING */
+    private static String serializeWarnTimes(Map<Integer, Long> times) {
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<Integer, Long> entry : times.entrySet()) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(entry.getKey()).append('=').append(entry.getValue());
+        }
+        return sb.toString();
+    }
+
 
     // ---------- 消息输出 ----------
 

@@ -65,7 +65,7 @@ public class HFcatDurabilityAlert extends JavaPlugin {
     /**
      * 配置合法性校验（只告警，不修改文件）：
      * - 阈值必须在 0~100 之间
-     * - cooldown 目前仅支持 -1（每个阈值只警告一次），正数会在未来版本实现
+     * - cooldown 支持 -1（每个阈值只警告一次）或正数（同阈值冷却 N 秒后重复警告）
      */
     private void validateConfig() {
         List<Integer> thresholds = getConfig().getIntegerList("warnings.thresholds");
@@ -81,10 +81,9 @@ public class HFcatDurabilityAlert extends JavaPlugin {
 
         int cooldown = getConfig().getInt("warnings.cooldown", -1);
         if (cooldown > 0) {
-            getLogger().warning("warnings.cooldown=" + cooldown + "：按冷却时间重复警告的功能尚未实现，"
-                    + "当前行为为每个阈值只警告一次（与 cooldown=-1 相同）。");
+            getLogger().info("warnings.cooldown=" + cooldown + "：同一阈值每 " + cooldown + " 秒可重复警告。");
         } else if (cooldown == 0 || cooldown < -1) {
-            getLogger().warning("warnings.cooldown=" + cooldown + " 无效（仅支持 -1），将按 -1 处理"
+            getLogger().warning("warnings.cooldown=" + cooldown + " 无效（支持 -1 或正数），将按 -1 处理"
                     + "（每个阈值只警告一次）。");
         }
 

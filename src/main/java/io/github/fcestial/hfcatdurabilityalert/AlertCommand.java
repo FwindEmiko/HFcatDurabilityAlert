@@ -72,8 +72,11 @@ public class AlertCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage("§7版本: §f" + plugin.getPluginMeta().getVersion());
         sender.sendMessage("§7阈值: §f" + config.getIntegerList("warnings.thresholds"));
         int cooldown = config.getInt("warnings.cooldown", -1);
+        String cooldownDesc = cooldown < 0
+                ? "每阈值一次"
+                : cooldown > 0 ? cooldown + " 秒后可重复" : "无效（按每阈值一次）";
         sender.sendMessage("§7冷却: §f" + cooldown
-                + " §8(" + (cooldown < 0 ? "每阈值一次" : "未实现，按一次处理") + ")");
+                + " §8(" + cooldownDesc + ")");
         sender.sendMessage("§7检查盔甲: §f" + config.getBoolean("warnings.check-armor", true)
                 + " §7主手: §f" + config.getBoolean("warnings.check-mainhand", true)
                 + " §7副手: §f" + config.getBoolean("warnings.check-offhand", true));

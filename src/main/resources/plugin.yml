@@ -1,9 +1,9 @@
 name: HFcatDurabilityAlert
 main: io.github.fcestial.hfcatdurabilityalert.HFcatDurabilityAlert
-version: '1.0.0'
+version: '1.2'
 api-version: '26.2'
 author: FCelestial
-description: 装备耐久度警告插件，基于1.20.5+组件系统精确读取耐久
+description: 装备耐久度警告插件
 
 commands:
   hfcatdurabilityalert:
