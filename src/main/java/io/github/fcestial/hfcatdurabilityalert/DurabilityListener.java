@@ -6,7 +6,6 @@ import net.kyori.adventure.title.Title;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
-import org.bukkit.Registry;
 import org.bukkit.Sound;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.enchantments.Enchantment;
@@ -29,10 +28,15 @@ import org.jetbrains.annotations.Nullable;
 import java.time.Duration;
 import net.kyori.adventure.text.TextReplacementConfig;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
 /**
@@ -59,21 +63,23 @@ import java.util.function.Supplier;
  *   （PlayerItemDamageEvent 携带的 ItemStack 与实物共享 NMS handle，但统一写实物更可靠）
  * - cooldown=-1：每个阈值只警告一次（降序遍历阈值，已警告的档位 continue 到更低档，
  *   命中未警告档位后警告并结束本次事件）
- *   （注：DESIGN.md 第六节流程图写的是「已警告→结束」，与第四节「每个阈值各触发一次」意图矛盾，
- *    本实现按第四节意图采用 continue 级联，见 MEMORY.md）
  * - cooldown>0：同一阈值按冷却时间可重复警告；每个阈值单独记录最近警告时间戳（PDC STRING）
  * - 物品被修复（当前百分比回升到上次警告阈值之上）时清除 PDC 标记，允许重新触发（DESIGN 4.2 方案A）
- * - 同 tick 内同一玩家同一槽位只发一条警告（EntityDamageEvent 兜底与 PlayerItemDamageEvent
+ * - 同一玩家同一槽位在 45ms 窗口内只发一条警告（EntityDamageEvent 兜底与 PlayerItemDamageEvent
  *   同 tick 连续触发时，防止一次损伤跨两个阈值连发两条）
  *
- * 线程约定：本插件面向 Paper/Leaf 非 Folia 服务器，所有事件处理器都在主线程执行，
- * lastWarnTick 为普通 HashMap（主线程独占）。若未来迁移 Folia，需改用区域线程安全方案
- * （如 RegionizedData 或 ConcurrentHashMap + 区域调度），并替换 Bukkit.getCurrentTick()。
+ * 线程约定：Paper/Leaf/Purpur 等非 Folia 服务器上事件处理器都在主线程执行。
+ * 配置读取集中在不可变快照 {@link Settings}（volatile 发布，reload 时整体替换），
+ * 去重表使用 ConcurrentHashMap + System.nanoTime() 窗口（不依赖 Bukkit.getCurrentTick()），
+ * 因此不存在「reload 后读到半更新配置」的可见性问题，也不会因缺少全局 tick 而抛异常。
+ * 注意：EntityDamageEvent 在 Folia 上可能由其他区域线程触发，此时读玩家背包是不安全的，
+ * plugin.yml 因此声明 folia-supported: true（兜底路径的区域守卫见 ownsEntity；兼容矩阵见 README）。
  *
- * 消息输出（Paper 26.2 无弃用 API）：
+ * 消息输出（Paper 1.20.5 ~ 26.2 全部可用）：
  * - & 颜色代码 → translateColorCodes（兼容 &#RRGGBB）→ LegacyComponentSerializer
  *   （显式启用 hexColors + useUnusualXRepeatedCharacterHexFormat，不依赖运行时 Provider 注入）
- * - sendMessage / sendActionBar / showTitle / Registry.SOUND_EVENT
+ * - sendMessage / sendActionBar / showTitle（Adventure，Paper 全版本可用）
+ * - 声音 → SoundResolver（自动适配 1.20.5~1.21.3 的枚举与 1.21.4+ 的 Registry.SOUND_EVENT）
  */
 @SuppressWarnings("SpellCheckingInspection")
 public class DurabilityListener implements Listener {
@@ -101,17 +107,32 @@ public class DurabilityListener implements Listener {
     private static final float SOUND_PITCH_MIN = 0.5f;
     private static final float SOUND_PITCH_MAX = 2.0f;
 
+    /** 阈值消息缺失时的通用回退文案 */
+    private static final String DEFAULT_MESSAGE = "&c⚠ {item} 耐久度 {percent}%！ ({durability}/{max})";
+
+    /** 同 tick 去重窗口（纳秒）：同一玩家同一槽位在该窗口内只发一条警告 */
+    private static final long DEDUP_WINDOW_NANOS = 45_000_000L;
+
     private final HFcatDurabilityAlert plugin;
     private final NamespacedKey lastWarnKey;
     private final NamespacedKey lastWarnTimesKey;
 
-    /** 同 tick 去重：playerUuid:slotName → server tick（主线程独占，见类注释） */
-    private final Map<String, Integer> lastWarnTick = new HashMap<>();
+    /** 同 tick 去重：playerUuid:slotName → 上次警告时刻的 nanoTime */
+    private final Map<String, Long> lastWarnNanos = new ConcurrentHashMap<>();
+
+    /** 配置快照（不可变，volatile 发布；reload 时整体替换，事件链只读） */
+    private volatile Settings settings;
 
     public DurabilityListener(HFcatDurabilityAlert plugin) {
         this.plugin = plugin;
         this.lastWarnKey = new NamespacedKey("hfcatdurabilityalert", "last_warn_threshold");
         this.lastWarnTimesKey = new NamespacedKey("hfcatdurabilityalert", "last_warn_times");
+        refresh();
+    }
+
+    /** 重建配置快照（onEnable 与 reload 时调用） */
+    public void refresh() {
+        this.settings = Settings.from(plugin.getConfig());
     }
 
     /**
@@ -124,36 +145,42 @@ public class DurabilityListener implements Listener {
         if (!player.hasPermission(HFcatDurabilityAlert.PERMISSION_USE)) return;
 
         ItemStack item = event.getItem();
-        FileConfiguration config = plugin.getConfig();
 
         // 跳过堆叠物品
         if (item.getAmount() > 1) return;
 
-        EquipmentSlot slot = findSlot(player, item, config);
+        Settings cfg = settings;
+        EquipmentSlot slot = findSlot(player, item, cfg);
         if (slot == null) return; // 不在监控范围内
 
         // 主路径：用 event.getDamage() 预测扣减后的耐久再判定（MONITOR 阶段损伤尚未应用）
-        checkAndWarn(player, item, slot, config, event.getDamage());
+        checkAndWarn(player, item, slot, cfg, event.getDamage());
     }
 
     /**
      * 兜底：玩家受伤时检查所有盔甲槽位。
      * 部分 Paper 版本在盔甲耐久扣减时不触发 PlayerItemDamageEvent。
      * 本路径拿不到精确扣减量，extraDamage 传 0（读扣减前状态）。
+     *
+     * Folia 兼容：EntityDamageEvent 可能由其他区域线程触发，此时访问玩家背包是不安全的，
+     * 因此先用 Bukkit.isOwnedByCurrentRegion 判断当前线程是否拥有该玩家；不是则跳过本次兜底
+     * （主路径 PlayerItemDamageEvent 仍会在玩家所属区域线程上正常触发）。
+     * 该方法在 Paper/Leaf/Purpur 1.20.5 起就存在（非 Folia 服务端恒为 true）。
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPlayerDamage(@NotNull EntityDamageEvent event) {
         if (!(event.getEntity() instanceof Player player)) return;
         if (!player.hasPermission(HFcatDurabilityAlert.PERMISSION_USE)) return;
 
-        FileConfiguration config = plugin.getConfig();
-        if (!config.getBoolean("warnings.check-armor", true)) return;
+        Settings cfg = settings;
+        if (!cfg.checkArmor) return;
+        if (!ownsEntity(player)) return;
 
         for (EquipmentSlot slot : ARMOR_SLOTS) {
             ItemStack armor = player.getInventory().getItem(slot);
-            if (armor.getType() == Material.AIR) continue;
+            if (armor == null || armor.getType() == Material.AIR) continue;
             if (armor.getAmount() > 1) continue;
-            checkAndWarn(player, armor, slot, config, 0);
+            checkAndWarn(player, armor, slot, cfg, 0);
         }
     }
 
@@ -167,54 +194,72 @@ public class DurabilityListener implements Listener {
         Player player = event.getPlayer();
         if (!player.hasPermission(HFcatDurabilityAlert.PERMISSION_USE)) return;
 
+        Settings cfg = settings;
+        String template = cfg.breakMessage;
+        // 留空 = 不提示（也不播放声音），与 config.yml 注释一致
+        if (template == null || template.isBlank()) return;
+
         ItemStack broken = event.getBrokenItem();
-        FileConfiguration config = plugin.getConfig();
 
         // 与阈值警告一致：忽略列表中的物品断裂也不发消息
-        if (isIgnored(broken.getType(), config)) return;
+        if (isIgnored(broken.getType(), cfg)) return;
 
         Component itemNameComp = getItemDisplayNameComponent(broken);
-        String template = config.getString("messages.break-message",
-                "&4&l!!! &f{item} &4&l已损坏！");
 
         // 替换 {item} 为 Component
-        String ITEM_MARKER = "_HFCDA_ITEM_";
-        String msg = template.replace("{item}", ITEM_MARKER);
-        Component base = LEGACY_SECTION.deserialize(translateColorCodes(msg));
-        Component finalMsg = base.replaceText(
-                TextReplacementConfig.builder()
-                        .matchLiteral(ITEM_MARKER)
-                        .replacement(itemNameComp)
-                        .build()
-        );
+        String itemMarker = "_HFCDA_ITEM_";
+        Component base = LEGACY_SECTION.deserialize(translateColorCodes(template.replace("{item}", itemMarker)));
+        Component finalMsg = base.replaceText(TextReplacementConfig.builder()
+                .matchLiteral(itemMarker)
+                .replacement(itemNameComp)
+                .build());
 
-        sendWarning(player, finalMsg, config);
+        sendWarning(player, finalMsg, cfg);
+    }
+
+    /** 当前线程是否拥有该实体所在区域（Folia 安全；非 Folia 服务端恒为 true） */
+    private static boolean ownsEntity(Player player) {
+        try {
+            return Bukkit.isOwnedByCurrentRegion(player);
+        } catch (Throwable ignored) {
+            // 极旧服务端或异常情况下保守跳过兜底路径
+            return false;
+        }
     }
 
     /** 清理同 tick 去重记录（防内存增长） */
     @EventHandler
     public void onPlayerQuit(@NotNull PlayerQuitEvent event) {
         String prefix = event.getPlayer().getUniqueId() + ":";
-        lastWarnTick.keySet().removeIf(key -> key.startsWith(prefix));
+        lastWarnNanos.keySet().removeIf(key -> key.startsWith(prefix));
     }
 
     /**
      * 核心逻辑：检查物品耐久并发送警告（流程见 DESIGN.md 第六节，级联见类注释）。
      *
      * @param extraDamage 本次事件将要应用的损伤（主监听传 event.getDamage()，兜底传 0）
-     * @return 是否发送了警告（供调试）
      */
     private void checkAndWarn(Player player, ItemStack item, EquipmentSlot slot,
-                                 FileConfiguration config, int extraDamage) {
+                              Settings cfg, int extraDamage) {
         ItemMeta meta = item.getItemMeta();
         if (meta == null) {
-            debug(() -> player.getName() + " item has no meta, skipped");
+            debug(cfg, () -> player.getName() + " item has no meta, skipped");
             return;
         }
 
-        // 无耐久物品：非 Damageable 或没有损伤值时跳过
-        if (!(meta instanceof Damageable damageable) || !damageable.hasDamage()) {
-            debug(() -> player.getName() + " item " + item.getType() + " has no durability damage, skipped");
+        // 无耐久物品：非 Damageable 直接跳过
+        if (!(meta instanceof Damageable damageable)) {
+            debug(cfg, () -> player.getName() + " item " + item.getType() + " has no meta damage, skipped");
+            return;
+        }
+
+        // 满耐久（damage=0）= 物品已被完全修复：顺手清掉可能残留的警告标记，
+        // 否则该标记会一直压制到下次警告阈值重新跨越（例如修复后又从 100% 掉到 50% 只发一条）
+        if (!damageable.hasDamage()) {
+            if (readLastWarned(player, slot, item) >= 0) {
+                removeWarnMarker(player, slot, item);
+                debug(cfg, () -> player.getName() + " item " + item.getType() + " fully repaired, warn marker reset");
+            }
             return;
         }
 
@@ -223,7 +268,7 @@ public class DurabilityListener implements Listener {
                 ? damageable.getMaxDamage()
                 : item.getType().getMaxDurability();
         if (maxDamage <= 0) {
-            debug(() -> player.getName() + " item " + item.getType() + " is unbreakable (max<=0), skipped");
+            debug(cfg, () -> player.getName() + " item " + item.getType() + " is unbreakable (max<=0), skipped");
             return; // 不可破坏或无耐久
         }
 
@@ -232,105 +277,93 @@ public class DurabilityListener implements Listener {
         if (damage > maxDamage) damage = maxDamage;
         int remaining = maxDamage - damage;
         if (remaining <= 0) {
-            debug(() -> player.getName() + " item " + item.getType() + " will break this hit, threshold warn skipped");
+            debug(cfg, () -> player.getName() + " item " + item.getType() + " will break this hit, threshold warn skipped");
             return;
         }
 
         double percent = (double) remaining / maxDamage * 100.0;
 
-        // 忽略列表
-        if (isIgnored(item.getType(), config)) {
-            debug(() -> player.getName() + " item " + item.getType() + " in ignore-items, skipped");
-            return;
-        }
-
-        // 经验修补：有修补的物品仅在达到/低于 mending-only-warn-below 时警告（0 与 -1 均视为禁用）
-        int mendingLevel = item.getEnchantmentLevel(Enchantment.MENDING);
-        int mendingOnlyBelow = config.getInt("mending.mending-only-warn-below",
-                HFcatDurabilityAlert.NO_MENDING);
-        boolean mendingActive = mendingLevel > 0 && mendingOnlyBelow > 0;
-        if (mendingActive && percent > mendingOnlyBelow) {
-            debug(() -> player.getName() + " item " + item.getType() + " has mending, percent=" + (int) percent
-                    + " > " + mendingOnlyBelow + ", skipped");
-            return;
-        }
-
-        // 冷却模式：-1 为每阈值只警告一次；正数为同阈值可重复警告的间隔秒数
-        int cooldown = config.getInt("warnings.cooldown", -1);
-        boolean repeatable = cooldown > 0;
-
-        // 修复重置：
+        // 修复重置（必须放在 ignore-items / mending 的提前返回「之前」）：
         // - cooldown=-1：当前百分比回升到上次警告阈值之上 → 清除 PDC 标记（DESIGN 4.2 方案A）
         // - cooldown>0：耐久回升到某阈值之上时清除该阈值的时间戳，使其可重新触发
+        // 若放在后面，带修补的物品一旦回升到 mending-only-warn-below 之上就直接 return，
+        // 旧标记会一直残留，导致该物品之后再跌回低耐久时「永远不会再告警」。
         int lastWarned = -1;
-        if (repeatable) {
+        if (cfg.repeatable) {
             clearWarnTimesAbove(player, slot, item, percent);
         } else {
             lastWarned = readLastWarned(player, slot, item);
             if (lastWarned >= 0 && percent > lastWarned) {
                 final int repairedFrom = lastWarned; // lambda 需要 effectively final 副本
                 removeWarnMarker(player, slot, item);
-                debug(() -> player.getName() + " item repaired above " + repairedFrom + "%, warn marker reset");
+                debug(cfg, () -> player.getName() + " item repaired above " + repairedFrom + "%, warn marker reset");
                 lastWarned = -1;
             }
         }
 
-        // 阈值列表：过滤越界值 → 降序 → mending 生效时只保留 <= 修补阈值的档位
-        List<Integer> thresholds = new ArrayList<>(config.getIntegerList("warnings.thresholds"));
-        thresholds.removeIf(t -> t < HFcatDurabilityAlert.THRESHOLD_MIN
-                || t > HFcatDurabilityAlert.THRESHOLD_MAX);
-        if (mendingActive) {
-            thresholds.removeIf(t -> t > mendingOnlyBelow);
+        // 忽略列表
+        if (isIgnored(item.getType(), cfg)) {
+            debug(cfg, () -> player.getName() + " item " + item.getType() + " in ignore-items, skipped");
+            return;
         }
-        thresholds.sort((a, b) -> b - a); // 降序
+
+        // 经验修补：有修补的物品仅在达到/低于 mending-only-warn-below 时警告（0 与 -1 均视为禁用）
+        boolean mendingActive = cfg.mendingEnabled
+                && item.getEnchantmentLevel(Enchantment.MENDING) > 0;
+        if (mendingActive && percent > cfg.mendingBelow) {
+            debug(cfg, () -> player.getName() + " item " + item.getType() + " has mending, percent=" + (int) percent
+                    + " > " + cfg.mendingBelow + ", skipped");
+            return;
+        }
+
+        // 阈值列表：mending 生效时使用只保留 <= 修补阈值的档位（快照中已排序好）
+        List<Integer> thresholds = mendingActive ? cfg.mendingThresholds : cfg.thresholds;
         if (thresholds.isEmpty()) {
-            debug(() -> player.getName() + " no valid thresholds, skipped");
+            debug(cfg, () -> player.getName() + " no valid thresholds, skipped");
             return;
         }
 
         long now = System.currentTimeMillis();
-        long cooldownMillis = repeatable ? cooldown * 1000L : 0L;
+        long cooldownMillis = cfg.cooldownMillis;
 
         for (int threshold : thresholds) {
-            if (percent <= threshold) {
-                if (repeatable) {
-                    // 同阈值冷却中 → 继续检查更低档位（级联）
-                    Long lastTime = readWarnTime(player, slot, item, threshold);
-                    if (lastTime != null && now - lastTime < cooldownMillis) {
-                        debug(() -> player.getName() + " item " + item.getType() + " threshold " + threshold
-                                + " is on cooldown, try next lower");
-                        continue;
-                    }
-                } else {
-                    // 该档位已警告过 → 继续检查更低档位（级联）
-                    if (lastWarned >= 0 && threshold >= lastWarned) {
-                        debug(() -> player.getName() + " item " + item.getType() + " already warned for threshold "
-                                + threshold + ", try next lower");
-                        continue;
-                    }
-                }
+            if (percent > threshold) continue;
 
-                // 同 tick 去重：兜底事件与主事件同 tick 连发时只发一条
-                String dedupKey = player.getUniqueId() + ":" + slot.name();
-                int tick = Bukkit.getCurrentTick();
-                if (lastWarnTick.getOrDefault(dedupKey, -1) == tick) {
-                    debug(() -> player.getName() + " already warned this tick for " + slot + ", skip");
-                    return;
+            if (cfg.repeatable) {
+                // 同阈值冷却中 → 继续检查更低档位（级联）
+                Long lastTime = readWarnTime(player, slot, item, threshold);
+                if (lastTime != null && now - lastTime < cooldownMillis) {
+                    debug(cfg, () -> player.getName() + " item " + item.getType() + " threshold " + threshold
+                            + " is on cooldown, try next lower");
+                    continue;
                 }
-
-                sendThresholdWarning(player, item, slot, remaining, maxDamage, (int) percent, threshold, config);
-                if (repeatable) {
-                    markWarnedCooldown(player, slot, item, threshold, now);
-                } else {
-                    markWarnedThreshold(player, slot, item, threshold);
-                }
-                lastWarnTick.put(dedupKey, tick);
-                debug(() -> player.getName() + " warned for " + item.getType() + " threshold " + threshold
-                        + " percent " + (int) percent);
-                return; // 每次事件只发一条警告
+            } else if (lastWarned >= 0 && threshold >= lastWarned) {
+                // 该档位已警告过 → 继续检查更低档位（级联）
+                debug(cfg, () -> player.getName() + " item " + item.getType() + " already warned for threshold "
+                        + threshold + ", try next lower");
+                continue;
             }
+
+            // 同 tick 去重：兜底事件与主事件同 tick 连发时只发一条
+            String dedupKey = player.getUniqueId() + ":" + slot.name();
+            long nowNanos = System.nanoTime();
+            Long lastWarn = lastWarnNanos.get(dedupKey);
+            if (lastWarn != null && nowNanos - lastWarn < DEDUP_WINDOW_NANOS) {
+                debug(cfg, () -> player.getName() + " already warned this tick for " + slot + ", skip");
+                return;
+            }
+
+            sendThresholdWarning(player, item, slot, remaining, maxDamage, (int) percent, threshold, cfg);
+            if (cfg.repeatable) {
+                markWarnedCooldown(player, slot, item, threshold, now);
+            } else {
+                markWarnedThreshold(player, slot, item, threshold);
+            }
+            lastWarnNanos.put(dedupKey, nowNanos);
+            debug(cfg, () -> player.getName() + " warned for " + item.getType() + " threshold " + threshold
+                    + " percent " + (int) percent);
+            return; // 每次事件只发一条警告
         }
-        return;
     }
 
     /**
@@ -339,15 +372,14 @@ public class DurabilityListener implements Listener {
      * 返回 null 表示不在监控范围内。
      * 已知局限：主副手同时持同类型、同数量、同已损失耐久物品时无法区分（方案书未要求，MINOR）。
      */
-    private @Nullable EquipmentSlot findSlot(Player player, ItemStack item, FileConfiguration config) {
-        boolean checkArmor = config.getBoolean("warnings.check-armor", true);
-        boolean checkMainhand = config.getBoolean("warnings.check-mainhand", true);
-        boolean checkOffhand = config.getBoolean("warnings.check-offhand", true);
-
-        if (checkMainhand && isSameItem(player.getInventory().getItemInMainHand(), item)) return EquipmentSlot.HAND;
-        if (checkOffhand && isSameItem(player.getInventory().getItemInOffHand(), item)) return EquipmentSlot.OFF_HAND;
-
-        if (checkArmor) {
+    private @Nullable EquipmentSlot findSlot(Player player, ItemStack item, Settings cfg) {
+        if (cfg.checkMainhand && isSameItem(player.getInventory().getItemInMainHand(), item)) {
+            return EquipmentSlot.HAND;
+        }
+        if (cfg.checkOffhand && isSameItem(player.getInventory().getItemInOffHand(), item)) {
+            return EquipmentSlot.OFF_HAND;
+        }
+        if (cfg.checkArmor) {
             for (EquipmentSlot slot : ARMOR_SLOTS) {
                 if (isSameItem(player.getInventory().getItem(slot), item)) return slot;
             }
@@ -372,16 +404,9 @@ public class DurabilityListener implements Listener {
         return (meta instanceof Damageable damageable) ? damageable.getDamage() : 0;
     }
 
-    /** 检查物品是否在忽略列表中（支持带 minecraft: 前缀与不带） */
-    private boolean isIgnored(Material material, FileConfiguration config) {
-        List<String> ignored = config.getStringList("warnings.ignore-items");
-        for (String item : ignored) {
-            String trimmed = item.trim();
-            if (trimmed.isEmpty()) continue;
-            String normalized = trimmed.toLowerCase(Locale.ROOT).replace("minecraft:", "");
-            if (material.name().equalsIgnoreCase(normalized)) return true;
-        }
-        return false;
+    /** 检查物品是否在忽略列表中（快照里已统一为小写、去 minecraft: 前缀） */
+    private boolean isIgnored(Material material, Settings cfg) {
+        return !cfg.ignoreItems.isEmpty() && cfg.ignoreItems.contains(material.name().toLowerCase(Locale.ROOT));
     }
 
     // ---------- PDC 防重复（写入玩家身上真实物品） ----------
@@ -402,7 +427,6 @@ public class DurabilityListener implements Listener {
         };
     }
 
-
     /** 读取上次警告的阈值（无标记返回 -1） */
     private int readLastWarned(Player player, EquipmentSlot slot, ItemStack item) {
         ItemMeta meta = liveItemOrFallback(player, slot, item).getItemMeta();
@@ -413,37 +437,32 @@ public class DurabilityListener implements Listener {
     /** 清除警告标记（物品被修复时调用） */
     private void removeWarnMarker(Player player, EquipmentSlot slot, ItemStack item) {
         liveItemOrFallback(player, slot, item)
-                .editMeta(meta -> meta.getPersistentDataContainer().remove(lastWarnKey));
+                .editMeta(meta -> {
+                    meta.getPersistentDataContainer().remove(lastWarnKey);
+                    meta.getPersistentDataContainer().remove(lastWarnTimesKey);
+                });
     }
 
     /**
      * 在玩家身上真实物品的 PDC 中记录已警告的阈值。
+     * 同时清理 cooldown>0 模式遗留的时间戳，避免配置切回 -1 后残留旧状态。
      * 直接改事件里的 ItemStack 元数据是包装副本、不可靠，必须写回实物。
      */
     private void markWarnedThreshold(Player player, EquipmentSlot slot, ItemStack item, int threshold) {
         liveItemOrFallback(player, slot, item)
-                .editMeta(meta -> meta.getPersistentDataContainer()
-                        .set(lastWarnKey, PersistentDataType.INTEGER, threshold));
+                .editMeta(meta -> {
+                    meta.getPersistentDataContainer()
+                            .set(lastWarnKey, PersistentDataType.INTEGER, threshold);
+                    meta.getPersistentDataContainer().remove(lastWarnTimesKey);
+                });
     }
 
     // ---------- 同阈值冷却时间戳（cooldown > 0 时使用） ----------
 
     /** 读取某阈值最近一次警告的时间戳（无记录返回 null） */
     private @Nullable Long readWarnTime(Player player, EquipmentSlot slot, ItemStack item, int threshold) {
-        String data = readWarnTimesRaw(player, slot, item);
-        if (data == null || data.isEmpty()) return null;
-        for (String entry : data.split(",")) {
-            int sep = entry.indexOf('=');
-            if (sep <= 0) continue;
-            try {
-                if (Integer.parseInt(entry.substring(0, sep)) == threshold) {
-                    return Long.parseLong(entry.substring(sep + 1));
-                }
-            } catch (NumberFormatException ignored) {
-                // 跳过损坏的旧数据
-            }
-        }
-        return null;
+        Map<Integer, Long> times = parseWarnTimes(readWarnTimesRaw(player, slot, item));
+        return times.get(threshold);
     }
 
     /** 读取冷却时间戳原始字符串（无记录返回 null） */
@@ -487,9 +506,9 @@ public class DurabilityListener implements Listener {
                 lowestWarned = Math.min(lowestWarned, t);
             }
             final int legacyMarker = lowestWarned;
+            final String serialized = serializeWarnTimes(times);
             live.editMeta(meta -> {
-                meta.getPersistentDataContainer()
-                        .set(lastWarnTimesKey, PersistentDataType.STRING, serializeWarnTimes(times));
+                meta.getPersistentDataContainer().set(lastWarnTimesKey, PersistentDataType.STRING, serialized);
                 meta.getPersistentDataContainer().set(lastWarnKey, PersistentDataType.INTEGER, legacyMarker);
             });
         }
@@ -522,27 +541,23 @@ public class DurabilityListener implements Listener {
         return sb.toString();
     }
 
-
     // ---------- 消息输出 ----------
 
     /** 发送阈值警告消息 */
     private void sendThresholdWarning(Player player, ItemStack item, EquipmentSlot slot,
-                                     int remaining, int max, int percent, int threshold,
-                                     FileConfiguration config) {
-        Component itemNameComp = getItemDisplayNameComponent(item);
-        String slotName = getSlotName(slot);
-
-        String message = findThresholdMessage(threshold, config);
-        if (message == null || message.isEmpty()) {
-            debug(() -> player.getName() + " no message configured for threshold " + threshold);
+                                      int remaining, int max, int percent, int threshold, Settings cfg) {
+        String template = cfg.messages.get(threshold);
+        if (template == null) template = cfg.defaultMessage;
+        if (template == null || template.isEmpty()) {
+            debug(cfg, () -> player.getName() + " no message configured for threshold " + threshold);
             return;
         }
 
+        String itemMarker = "_HFCDA_ITEM_";
         // 先用占位符替换普通字符串占位，{item} 用特殊标记，后续替换为 Component
-        String ITEM_MARKER = "_HFCDA_ITEM_";
-        String msg = message
-                .replace("{item}", ITEM_MARKER)
-                .replace("{slot}", slotName)
+        String msg = template
+                .replace("{item}", itemMarker)
+                .replace("{slot}", getSlotName(slot))
                 .replace("{durability}", String.valueOf(remaining))
                 .replace("{max}", String.valueOf(max))
                 .replace("{percent}", String.valueOf(percent))
@@ -550,87 +565,32 @@ public class DurabilityListener implements Listener {
 
         // 解析为 Adventure Component，然后替换 {item} 标记为物品名 Component
         Component base = LEGACY_SECTION.deserialize(translateColorCodes(msg));
-        Component finalMsg = base.replaceText(
-                TextReplacementConfig.builder()
-                        .matchLiteral(ITEM_MARKER)
-                        .replacement(itemNameComp)
-                        .build()
-        );
+        Component finalMsg = base.replaceText(TextReplacementConfig.builder()
+                .matchLiteral(itemMarker)
+                .replacement(getItemDisplayNameComponent(item))
+                .build());
 
-        sendWarning(player, finalMsg, config);
-    }
-
-    /** 从配置中查找阈值对应的消息格式，找不到则用通用回退 */
-    private String findThresholdMessage(int threshold, FileConfiguration config) {
-        var section = config.getMapList("messages.formats");
-        for (var entry : section) {
-            Object pct = entry.get("percent");
-            Object msg = entry.get("message");
-            if (pct instanceof Number n && msg instanceof String s) {
-                if (n.intValue() == threshold) return s;
-            }
-        }
-        // 回退默认消息
-        return "&c⚠ {item} 耐久度 {percent}%！ ({durability}/{max})";
+        sendWarning(player, finalMsg, cfg);
     }
 
     /**
      * 发送警告消息到玩家。
-     * 全部使用 Adventure API（Paper 26.2 下 Bungee/ActionBar/Title 旧版 API 已弃用）。
-     * 接受已构建好的 Component（含 TranslatableComponent，客户端自行翻译物品名）。
+     * 全部使用 Adventure API（Paper 下 Bungee/ActionBar/Title 旧版 API 已弃用）。
      */
-    private void sendWarning(Player player, Component component, FileConfiguration config) {
-        if (config.getBoolean("messages.send-chat", true)) {
+    private void sendWarning(Player player, Component component, Settings cfg) {
+        if (cfg.sendChat) {
             player.sendMessage(component);
         }
-        if (config.getBoolean("messages.send-actionbar", true)) {
+        if (cfg.sendActionbar) {
             player.sendActionBar(component);
         }
-        if (config.getBoolean("messages.send-title", false)) {
+        if (cfg.sendTitle) {
             player.showTitle(Title.title(component, Component.empty(),
                     Title.Times.times(TITLE_FADE_IN, TITLE_STAY, TITLE_FADE_OUT)));
         }
-
         // 声音是独立输出通道，不受 send-* 开关影响
-        String soundStr = config.getString("messages.warning-sound", "");
-        if (!soundStr.isEmpty()) {
-            playSound(player, soundStr);
-        }
-    }
-
-    /**
-     * 解析并播放声音。格式: SOUND_NAME 或 SOUND_NAME:音量:音调。
-     * Sound.valueOf(String) 在 26.2 已标记待删除，改用 Registry.SOUND_EVENT 查询。
-     * 对配置错误（前导冒号、非法数字、越界值）只告警或钳制，绝不向事件链抛出异常。
-     */
-    private void playSound(Player player, String soundStr) {
-        String[] parts = soundStr.split(":", -1);
-        if (parts[0].isEmpty()) {
-            if (plugin.getConfig().getBoolean("debug", false)) {
-                plugin.getLogger().warning("无效的声音配置（缺少声音名）: " + soundStr);
-            }
-            return;
-        }
-        try {
-            NamespacedKey key = NamespacedKey.minecraft(parts[0].toLowerCase(Locale.ROOT));
-            Sound sound = Registry.SOUND_EVENT.get(key);
-            if (sound == null) {
-                if (plugin.getConfig().getBoolean("debug", false)) {
-                    plugin.getLogger().warning("未找到声音: " + parts[0]);
-                }
-                return;
-            }
-            float volume = parts.length > 1
-                    ? parseSoundParam(parts[1], SOUND_VOLUME_MIN, SOUND_VOLUME_MAX)
-                    : 1.0f;
-            float pitch = parts.length > 2
-                    ? parseSoundParam(parts[2], SOUND_PITCH_MIN, SOUND_PITCH_MAX)
-                    : 1.0f;
-            player.playSound(player.getLocation(), sound, volume, pitch);
-        } catch (IllegalArgumentException e) {
-            if (plugin.getConfig().getBoolean("debug", false)) {
-                plugin.getLogger().warning("无效的声音配置: " + soundStr + " (" + e.getMessage() + ")");
-            }
+        if (cfg.sound != null) {
+            player.playSound(player.getLocation(), cfg.sound, cfg.soundVolume, cfg.soundPitch);
         }
     }
 
@@ -743,9 +703,115 @@ public class DurabilityListener implements Listener {
     }
 
     /** debug 开关下的日志输出（惰性求值：开关关闭时不执行字符串拼接） */
-    private void debug(Supplier<String> messageSupplier) {
-        if (plugin.getConfig().getBoolean("debug", false)) {
+    private void debug(Settings cfg, Supplier<String> messageSupplier) {
+        if (cfg.debug) {
             plugin.getLogger().info("[Debug] " + messageSupplier.get());
+        }
+    }
+
+    // ---------- 配置快照 ----------
+
+    /**
+     * 不可变配置快照：onEnable / reload 时一次性解析，事件链只读取这里的字段。
+     * 好处：事件热路径零配置解析开销，且 reload 后所有事件看到的是同一份完整配置。
+     */
+    private static final class Settings {
+
+        final List<Integer> thresholds;
+        final List<Integer> mendingThresholds;
+        final boolean mendingEnabled;
+        final int mendingBelow;
+        final boolean repeatable;
+        final long cooldownMillis;
+        final boolean checkArmor;
+        final boolean checkMainhand;
+        final boolean checkOffhand;
+        final Set<String> ignoreItems;
+        final Map<Integer, String> messages;
+        final String defaultMessage;
+        final String breakMessage;
+        final boolean sendChat;
+        final boolean sendActionbar;
+        final boolean sendTitle;
+        final @Nullable Sound sound;
+        final float soundVolume;
+        final float soundPitch;
+        final boolean debug;
+
+        private Settings(FileConfiguration config) {
+            // 阈值：过滤越界值 → 降序
+            List<Integer> list = new ArrayList<>(config.getIntegerList("warnings.thresholds"));
+            list.removeIf(t -> t < HFcatDurabilityAlert.THRESHOLD_MIN || t > HFcatDurabilityAlert.THRESHOLD_MAX);
+            list.sort((a, b) -> b - a);
+            this.thresholds = Collections.unmodifiableList(list);
+
+            this.mendingBelow = config.getInt("mending.mending-only-warn-below", HFcatDurabilityAlert.NO_MENDING);
+            this.mendingEnabled = this.mendingBelow > 0;
+            if (mendingEnabled) {
+                List<Integer> mending = new ArrayList<>(list);
+                mending.removeIf(t -> t > mendingBelow);
+                this.mendingThresholds = Collections.unmodifiableList(mending);
+            } else {
+                this.mendingThresholds = this.thresholds;
+            }
+
+            int cooldown = config.getInt("warnings.cooldown", -1);
+            this.repeatable = cooldown > 0;
+            this.cooldownMillis = repeatable ? cooldown * 1000L : 0L;
+
+            this.checkArmor = config.getBoolean("warnings.check-armor", true);
+            this.checkMainhand = config.getBoolean("warnings.check-mainhand", true);
+            this.checkOffhand = config.getBoolean("warnings.check-offhand", true);
+
+            Set<String> ignored = new HashSet<>();
+            for (String raw : config.getStringList("warnings.ignore-items")) {
+                if (raw == null) continue;
+                String normalized = raw.trim().toLowerCase(Locale.ROOT).replace("minecraft:", "");
+                if (!normalized.isEmpty()) ignored.add(normalized);
+            }
+            this.ignoreItems = Collections.unmodifiableSet(ignored);
+
+            Map<Integer, String> formats = new LinkedHashMap<>();
+            for (Map<?, ?> entry : config.getMapList("messages.formats")) {
+                Object pct = entry.get("percent");
+                Object msg = entry.get("message");
+                if (pct instanceof Number number && msg instanceof String text) {
+                    formats.putIfAbsent(number.intValue(), text);
+                }
+            }
+            this.messages = Collections.unmodifiableMap(formats);
+            this.defaultMessage = DEFAULT_MESSAGE;
+
+            String breakTemplate = config.getString("messages.break-message", "");
+            this.breakMessage = (breakTemplate == null || breakTemplate.isBlank()) ? null : breakTemplate;
+
+            this.sendChat = config.getBoolean("messages.send-chat", true);
+            this.sendActionbar = config.getBoolean("messages.send-actionbar", true);
+            this.sendTitle = config.getBoolean("messages.send-title", false);
+
+            String soundStr = config.getString("messages.warning-sound", "");
+            if (soundStr == null || soundStr.isBlank()) {
+                this.sound = null;
+                this.soundVolume = 1.0f;
+                this.soundPitch = 1.0f;
+            } else {
+                Sound resolved = SoundResolver.resolve(SoundResolver.extractName(soundStr));
+                this.sound = resolved;
+                String[] parts = soundStr.split(":", -1);
+                int paramStart = SoundResolver.paramStart(soundStr);
+                this.soundVolume = parts.length > paramStart
+                        ? parseSoundParam(parts[paramStart], SOUND_VOLUME_MIN, SOUND_VOLUME_MAX)
+                        : 1.0f;
+                this.soundPitch = parts.length > paramStart + 1
+                        ? parseSoundParam(parts[paramStart + 1], SOUND_PITCH_MIN, SOUND_PITCH_MAX)
+                        : 1.0f;
+            }
+
+            this.debug = config.getBoolean("debug", false);
+        }
+
+        static Settings from(FileConfiguration config) {
+            return new Settings(config);
         }
     }
 }

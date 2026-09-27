@@ -1,18 +1,24 @@
 @echo off
 rem ============================================
-rem HFcatDurabilityAlert 一键构建脚本
-rem Gradle 8.12 必须用 JDK 21 启动（不支持 JDK 25）
-rem 编译由 toolchain 自动调用 JDK 25（通过 -D 传入路径，与 gradle.properties 一致）
+rem HFcatDurabilityAlert 一键构建脚本（Windows）
+rem 需要 JDK 21 或更高版本（Gradle 9 与插件编译都支持 21~25）
+rem 产物: build\libs\HFcatDurabilityAlert-<version>.jar
 rem ============================================
 setlocal
-set "JAVA_HOME=F:\env\jdk\azul-21.0.11"
 cd /d "%~dp0"
-call gradlew.bat shadowJar -Dorg.gradle.java.installations.paths=F:/env/jdk/azul-25.0.3,F:/env/jdk/azul-21.0.11 %*
+
+if not defined JAVA_HOME (
+    echo [提示] 未设置 JAVA_HOME，将使用 PATH 中的 java。若构建失败请设置 JAVA_HOME 指向 JDK 21+。
+)
+
+call gradlew.bat clean build %*
 if errorlevel 1 (
     echo.
-    echo [构建失败] 请检查 JDK 安装路径（build.bat 中的 JAVA_HOME 与 -D 参数）
+    echo [构建失败] 请确认已安装 JDK 21 或更高版本（JAVA_HOME 指向 JDK 安装目录）。
     exit /b 1
 )
+
 echo.
-echo [构建成功] build\libs\HFcatDurabilityAlert-1.0.0.jar
+echo [构建成功] 产物位于 build\libs\
+dir /b build\libs\*.jar
 endlocal

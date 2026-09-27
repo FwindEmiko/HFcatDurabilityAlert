@@ -43,3 +43,6 @@ Desktop.ini
 .env
 *.local
 local.properties
+
+# ---------- 发布包 ----------
+dist/

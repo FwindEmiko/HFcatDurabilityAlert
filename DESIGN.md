@@ -12,9 +12,9 @@
 |---|---|
 | 插件名 | HFcatDurabilityAlert |
 | 包名 | `io.github.fcestial.hfcatdurabilityalert` |
-| 目标平台 | Paper / Leaf 26.2+ (MC 1.21.8) |
-| JDK | 25 |
-| 构建 | Gradle (Kotlin DSL) + Shadow 8.3.6 |
+| 目标平台 | Paper 系服务端（Paper / Leaf / Purpur / Folia）**1.20.5 ~ 26.2** |
+| JDK | 编译产物 Java 21 字节码（任何 JDK 21+ 都能构建，服务端 Java 21 / 25 均可运行） |
+| 构建 | Gradle 9.7.1 (Kotlin DSL)，零第三方依赖（不需要 Shadow） |
 | 外部依赖 | **零** — 仅 `paper-api` (compileOnly) |
 | 参考项目 | [spommerening/ToolWarn](https://github.com/spommerening/ToolWarn) (MIT License) |
 
@@ -243,7 +243,15 @@ private void markWarnedThreshold(ItemStack item, int threshold) {
 }
 ```
 
+当 `cooldown > 0` 时，除上述整数标记外，另用 PDC STRING `last_warn_times` 按阈值记录最近警告时间戳（格式 `50=1710000000123,30=1710000000456`），冷却期内同阈值跳过、冷却后可重复警告；修复回升到某阈值之上时清除该阈值的时间戳。
+
 ### 4.2 重置逻辑
+
+> 实现位置提醒：`修复重置（percent > lastWarned → 清除 PDC 标记）必须放在「ignore-items 跳过」与
+> 「mending 跳过」两个提前返回之前`，否则带修补的物品一旦回升到 `mending-only-warn-below` 之上就会
+> 直接 return，旧标记永久残留，该物品之后再跌回低耐久时永远不会再告警。`javap -c` 可见
+> `isIgnored`（偏移 292）位于 `clearWarnTimesAbove`（228）/`readLastWarned`（238）/
+> `removeWarnMarker`（265）之后。
 
 当物品被修复（耐久回升）时，需要重置标记：
 
@@ -270,33 +278,42 @@ cooldown: -1
 
 ### 5.1 完整 config.yml
 
+以 ```src/main/resources/config.yml```（默认生成文件）为准，关键项：
+
 ```yaml
 warnings:
-  thresholds: [50, 30, 15, 10, 5]
-  cooldown: -1
+  thresholds: [50, 30, 15, 10, 5]   # 0 永远不会触发（剩余为 0 时物品已损坏）
+  cooldown: -1                      # -1 每阈值一次；>0 同阈值冷却 N 秒可重复
   check-armor: true
   check-mainhand: true
   check-offhand: true
-  ignore-items: ["elytra", "shield"]
+  ignore-items: []                  # 英文物品名，不区分大小写，可带 minecraft:
 
 messages:
   formats:
     - percent: 50
-      message: "&e⚠ &f{item} &e耐久度已降至 &6{percent}%&e！"
+      message: "&e⚠ &f{item} &e耐久度已降至 &6{percent}%&e！ &7({durability}/{max})"
     - percent: 5
-      message: "&4&l!!! &f{item} &4&l马上要断了！"
+      message: "&4&l!!! &f{item} &4&l马上要坏掉啦！ &7仅剩 {percent}%"
   send-chat: true
   send-actionbar: true
   send-title: false
-  warning-sound: "ENTITY_EXPERIENCE_ORB_PICKUP:0.8:1.2"
+  break-message: "&4&l!!! &f{item} &4&l已损坏！"        # 留空 = 不提示也不播放声音
+  warning-sound: "ENTITY_EXPERIENCE_ORB_PICKUP:0.8:1.2" # 也可写 entity.experience_orb.pickup
 
 mending:
-  mending-only-warn-below: 10
+  mending-only-warn-below: 5        # -1 或 0 关闭
 
 debug: false
 ```
 
 ### 5.2 消息占位符
+
+> `{item}` 会被替换为 Adventure 组件：优先自定义名（铁砧重命名），其次数据包的 `item_name` 翻译键，
+> 最后用物品的默认翻译键，由玩家客户端按自身语言渲染（中文客户端显示「铁头盔」等）。
+
+> 若某档阈值在 `messages.formats` 中没有对应条目，会使用内置兜底文案
+> `&c⚠ {item} 耐久度 {percent}%！ ({durability}/{max})`；整个 `formats` 为空时加载阶段会给出警告。
 
 | 占位符 | 说明 | 示例 |
 |---|---|---|
@@ -363,8 +380,9 @@ HFcatDurabilityAlert/
 └── src/
     └── main/
         ├── java/io/github/fcestial/hfcatdurabilityalert/
-        │   ├── HFcatDurabilityAlert.java     ← 主类
-        │   ├── DurabilityListener.java       ← 事件监听器
+        │   ├── HFcatDurabilityAlert.java     ← 主类（生命周期 / 配置校验 / 快照刷新）
+        │   ├── DurabilityListener.java       ← 事件监听器 + 不可变配置快照 Settings
+        │   ├── SoundResolver.java            ← 声音解析兼容层（枚举 / Registry 双路径）
         │   └── AlertCommand.java              ← 命令处理
         └── resources/
             ├── plugin.yml                     ← 插件描述
@@ -386,7 +404,10 @@ HFcatDurabilityAlert/
 2. **API 坑点（实测编译验证）**：
    - `PlayerItemDamageEvent` **没有** `getSlot()` 方法！槽位判断必须通过匹配玩家实时装备（`findSlot()` 方法，比较主手/副手/盔甲各槽位的 `getItemInMainHand()`/`getItem(slot)` 与事件物品）
    - `hasMaxDamage()`/`getMaxDamage()` 定义在 `Damageable` 接口上，不在 `ItemMeta` 上——必须先 `meta instanceof Damageable` 强转后再调用
-   - `Sound.valueOf(String)` 在 26.2 已标记待删除（编译警告 removal）——改用 `Registry.SOUND_EVENT.get(NamespacedKey.minecraft(name.toLowerCase()))`
+   - `Sound.valueOf(String)` 在 26.2 已标记待删除，但 **1.20.5 ~ 1.21.3 只有它可用**
+     （这些版本没有 `Registry.SOUND_EVENT`）；而 1.21.4+ 的注册表键是**点分名**
+     （`entity.experience_orb.pickup`），用下划线名去查注册表会返回 null。
+     故统一由 `SoundResolver` 运行时探测双路径并缓存结果
    - `Enchantment.MENDING` 获取等级用 `item.getEnchantmentLevel(Enchantment.MENDING)`，在 26.2 仍可用
 
 3. **事件监听铁则**：
@@ -411,33 +432,38 @@ HFcatDurabilityAlert/
 
 ### 8.2 构建环境
 
-| 工具 | 版本 | 路径 |
+| 工具 | 版本 | 说明 |
 |---|---|---|
-| JDK 25（编译用） | Azul Zulu 25.0.3 | `F:\env\jdk\azul-25.0.3` |
-| JDK 21（Gradle 启动用） | Azul Zulu 21.0.11 | `F:\env\jdk\azul-21.0.11` |
-| Gradle | 8.12 (wrapper) | 项目自带 `gradlew.bat` |
-| Paper API | 26.2.build.+ | Maven 仓库自动解析 |
+| JDK | 21 ~ 25 任意 | Gradle 9.7.1 可在 JDK 21/25 上运行；编译由 `options.release=21` 固定输出 Java 21 字节码 |
+| Gradle | 9.7.1 (wrapper) | 项目自带 `gradlew` / `gradlew.bat`，首次运行自动下载 |
+| Paper API | `1.20.6-R0.1-SNAPSHOT`(compileOnly) | 编译基线；只用 1.20.5 已存在的 API，运行期覆盖 1.20.5 ~ 26.2 |
 
-**构建方式（重要）**：
+**构建方式**：
 
 ```bash
-# Windows：直接双击 build.bat 或执行
-F:\Java_project\HFcatDurabilityAlert\build.bat
+# Linux / macOS
+./gradlew build
 
-# 或手动（必须先设 JAVA_HOME=JDK21，Gradle 8.12 不支持 JDK 25 运行时）
-set JAVA_HOME=F:\env\jdk\azul-21.0.11
-gradlew.bat shadowJar
+# Windows
+build.bat            # 等价于 gradlew.bat clean build
 ```
 
-**为什么需要两个 JDK**：
-- Gradle 8.12 在 JDK 25 上启动会直接失败（`25.0.3` 无意义报错）
-- Paper 26.2 API 编译为 class version 69.0，编译器必须用 JDK 25
-- 解决方案：Gradle 跑在 JDK 21 上，通过 `gradle.properties` 中的 `org.gradle.java.installations.paths` 声明 JDK 25，由 toolchain 自动调用
+产物：`build/libs/HFcatDurabilityAlert-<version>.jar`（版本号来自 `build.gradle.kts`，
+由 `processResources` 注入 `plugin.yml`，不会出现版本不一致）。
+
+**为什么不再需要双 JDK**：
+- 旧方案要求 Gradle 8.12 跑在 JDK 21 + toolchain 调 JDK 25，原因是 Paper 26.2 API 为 class version 69；
+- 现在编译基线降到 1.20.6（class version 65），任何 JDK 21+ 编译器都可用，
+  `options.release=21` 保证产物是 Java 21 字节码，从而同时兼容 Java 21（1.21.x 服务端）与 Java 25（26.x 服务端）。
+
+**编译基线为什么是 1.20.6 而不是 1.20.5**：1.20.5 的 POM 依赖 `net.kyori:adventure-bom:4.17.0-SNAPSHOT`，
+该快照已被 PaperMC 仓库清理，Gradle 无法解析；1.20.6 依赖正式版 4.17.0，可正常解析。
+源码仍只用 1.20.5 就存在的 API（已用 1.20.5 的 paper-api jar 直接 `javac` 验证通过）。
 
 ### 8.3 部署
 
-- JAR 名: `HFcatDurabilityAlert-1.0.0.jar`
-- 部署路径: `M:\MainServer\plugins\` (或用户手动部署)
+- JAR 名: `HFcatDurabilityAlert-<version>.jar`
+- 部署：放入服务端 `plugins/` 目录后重启（或 `/reload confirm`）
 - 首次启动自动生成 `plugins/HFcatDurabilityAlert/config.yml`
 
 ### 8.4 测试命令
@@ -450,7 +476,10 @@ gradlew.bat shadowJar
 
 ### 8.5 未来可扩展功能
 
-- **Folia 支持**：使用 `Plugin.getRegionScheduler()` 替代直接调用
+- ~~Folia 支持~~：已实现——`EntityDamageEvent` 兜底路径先做 `Bukkit.isOwnedByCurrentRegion(player)`
+  区域归属判断（Paper 1.20.5+ 起该方法即存在，非 Folia 恒为 true），去重表改为
+  `ConcurrentHashMap` + `System.nanoTime()` 窗口，配置改为 volatile 不可变快照，
+  故 `plugin.yml` 声明 `folia-supported: true`
 - **MiniMessage 格式**：将 `&` 颜色代码替换为 MiniMessage 标签
 - **Unbreaking 智能阈值**：根据耐久附魔等级动态调整警告阈值
 - **PlaceholderAPI 集成**：将耐久信息暴露给其他插件
@@ -499,3 +528,59 @@ Damageable (extends ItemMeta):
 ---
 
 *© 2026 狐魇星玖 (FCelestial) · MiragEdge*
+
+
+---
+
+## 十一、多版本 / 多服务端兼容适配（2026-09 公开发布前补充）
+
+### 11.1 兼容矩阵
+
+| 服务端 | 版本区间 | 最低 Java | 状态 |
+|---|---|---|---|
+| Paper | 1.20.5 ~ 26.2 | 21（26.x 需 25） | 已全量冒烟（见 README） |
+| Leaf | 26.2 | 25 | 已冒烟 |
+| Purpur | 1.20.6 / 1.21.8 / 26.2 | 21 / 25 | 已冒烟 |
+| Folia | 26.2 | 25 | 加载 / 命令已通过（区域安全见 10.4） |
+| Spigot / CraftBukkit | 任意 | — | 不支持（依赖 Paper 的 Adventure 实现） |
+| Paper < 1.20.5 | 任意 | — | 不加载（`api-version: '1.20.5'` 被服务端拒绝） |
+
+### 11.2 版本差异与适配点
+
+| 差异 | 影响 | 适配方式 |
+|---|---|---|
+| `Damageable#hasMaxDamage()/getMaxDamage()` 仅 1.20.5+ 存在 | 旧服务端 `NoSuchMethodError` | `api-version='1.20.5'` + 启动时反射能力探测，缺失则自动停用并提示 |
+| `Registry.SOUND_EVENT` 仅 1.21.4+ 存在；1.20.5~1.21.3 只有枚举 `Sound.valueOf`；1.21.4+ 注册表键是点分名 | 声音静默失效 | `SoundResolver` 三路兜底（注册表 → 枚举 valueOf → values() 扫描）并缓存 |
+| 26.x 服务端要求 Java 25、1.21.x 要求 Java 21 | 字节码不兼容 | `options.release=21` 输出 Java 21 字节码（Java 25 可加载） |
+| Folia 区域线程模型 | 跨线程访问玩家背包抛异常 | `Bukkit.isOwnedByCurrentRegion(entity)` 守卫兜底路径 + 并发容器 + volatile 快照 |
+| Paper 26.1/26.2 使用年份版本号（= MC 26.1/26.2） | 版本字符串比较易错 | 不做版本号比较，只做能力探测 |
+
+### 11.3 事件链性能
+
+配置在 `onEnable` / `reload` 时解析为**不可变快照** `Settings`（阈值已过滤排序、
+消息表已建 Map、忽略表已归一化、声音已解析、`send-*` / `check-*` 开关已缓存），
+事件热路径只做一次 volatile 读 + 阈值遍历，不再每次事件解析 YAML；`debug` 日志用 `Supplier` 惰性求值。
+
+### 11.4 Folia 安全边界
+
+- 已保证：区域归属判断、无全局 tick 依赖、并发去重表、快照发布。
+- 未覆盖：无法在测试环境模拟多区域并发伤害的真实压力场景，建议 Folia 用户自行压测后再上生产。
+
+### 11.5 修复重置的运行时验证（2026-09-24 实测）
+
+**背景**：第一轮审查发现一处 MAJOR —— `checkAndWarn` 里的「物品被修复 → 清除告警标记」逻辑原本放在 ignore-items 与 mending 提前返回**之后**，导致带经验修补的物品一旦回升到 `mending-only-warn-below` 之上就直接 `return`，旧标记永久残留，该物品之后再跌回低耐久时**永远不会再告警**（默认配置即受影响）。
+
+**修复**：把修复重置（清除 PDC 标记 / 清除冷却时间戳）整体上移到两个提前返回之前。
+静态验证：`javap -c` 显示 `isIgnored` 的调用点（偏移 292）位于修复重置调用（`clearWarnTimesAbove` 228 / `readLastWarned` 238 / `removeWarnMarker` 265）之后。
+
+**运行时验证（Paper 1.21.8 实机 + mineflayer 机器人）**：
+
+| 步骤 | 操作 | 观察到的证据 |
+|---|---|---|
+| 1 | 设 `mending-only-warn-below: 90`，发放 50% 耐久的经验修补剑 | `[Debug] warned for DIAMOND_SWORD threshold 50 percent 49`（正常告警并写入标记）|
+| 2 | 提高同一件物品的耐久（保留 PDC），使其回到已记录阈值以上 | `[Debug] TestBot item repaired above 50%, warn marker reset` ← **修复分支确实执行并清除了标记** |
+| 3 | 让物品再次掉到 50% 以下并观察是否重新告警 | ⚠ 本轮用例未复现第二次告警：修复写入会被同一 tick 的挖掘/攻击损害覆盖，物品实际未稳定回到阈值以上；「可重新触发」由标记已清除这一事实保证，尚未取得端到端日志 |
+
+> 测试要点：装备槽（`equipment.head.components.*`）的 `data modify` 无法真正改变耐久，必须用背包槽
+> （`Inventory[{Slot:0b}].components."minecraft:damage"`）；且物品持续被生物攻击/挖掘时写入会被同一 tick
+> 的损害覆盖，需要在写入前暂停耐久消耗。

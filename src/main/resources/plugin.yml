@@ -1,9 +1,10 @@
 name: HFcatDurabilityAlert
 main: io.github.fcestial.hfcatdurabilityalert.HFcatDurabilityAlert
-version: '1.2'
-api-version: '26.2'
+version: '${version}'
+api-version: '1.20.5'
+description: 装备耐久度警告插件 — 基于 1.20.5+ 组件系统精确读取耐久（Paper/Leaf/Purpur/Folia 1.20.5 ~ 26.2）
 author: FCelestial
-description: 装备耐久度警告插件
+folia-supported: true
 
 commands:
   hfcatdurabilityalert:
@@ -11,10 +12,11 @@ commands:
     usage: /hfcatdurabilityalert [reload|status|help]
     aliases: [hdura, hdalert]
     permission: hfcatdurabilityalert.admin
+    permission-message: '§c你没有权限执行此命令。'
 
 permissions:
   hfcatdurabilityalert.admin:
-    description: 允许重载插件配置
+    description: 允许重载插件配置与查看状态
     default: op
   hfcatdurabilityalert.use:
     description: 允许接收耐久警告

@@ -1,13 +1,14 @@
 # ============================================
 #  HFcatDurabilityAlert 耐久度警告插件 配置文件
-#  狐风轩汐 - F.windEmiko
-#  QQ: 2011857087
+#  狐魇星玖 - FCelestial
+#  兼容: Paper / Leaf / Purpur / Folia 等 Paper 系服务端 1.20.5 ~ 26.2（Java 21 / 25）
 # ============================================
 
 # ---------- 警告触发条件 ----------
 warnings:
   # 警告阈值（剩余耐久百分比 0-100）
   # 从高到低排列，物品耐久每降到一个阈值就触发一次警告
+  # 注意: 写 0 永远不会触发（剩余耐久为 0 时物品已损坏，走 break-message）
   thresholds:
     - 50
     - 30
@@ -39,7 +40,7 @@ messages:
   #   {max}       最大耐久点数
   #   {percent}   剩余耐久百分比（整数）
   #   {threshold} 触发的阈值百分比
-  # 颜色支持 & 代码（&a &c &l 等）或 MiniMessage 标签
+  # 颜色支持 & 代码（&a &c &l 等）与 &#RRGGBB 十六进制（不支持 MiniMessage 标签）
   formats:
     - percent: 50
       message: "&e⚠ &f{item} &e耐久度已降至 &6{percent}%&e！ &7({durability}/{max})"
@@ -57,11 +58,16 @@ messages:
   send-actionbar: true   # 动作栏（经验条上方）
   send-title: false      # 屏幕中央大字 Title
 
-  # 物品彻底损坏（耐久归零）时的提示文案，留空则不提示
+  # 物品彻底损坏（耐久归零）时的提示文案，留空则不提示（也不播放声音）
   break-message: "&4&l!!! &f{item} &4&l已损坏！"
 
   # 警告时播放的声音，留空则不播放（物品损坏时也会播放此声音）
-  # 格式: 声音名 或 声音名:音量:音调，仅用 Bukkit 声音名、不带 minecraft: 前缀
+  # 格式: 声音名 或 声音名:音量:音调
+  # 声音名可写:
+  #   1) 老式枚举名（全平台通用）: ENTITY_EXPERIENCE_ORB_PICKUP
+  #   2) 命名空间键（Paper 1.21.4+ 可用）: entity.experience_orb.pickup
+  #      也可带前缀: minecraft:entity.experience_orb.pickup
+  # 音量默认 1.0（钳制 0.0~2.0），音调默认 1.0（钳制 0.5~2.0）
   # 例如: ENTITY_EXPERIENCE_ORB_PICKUP:1.0:1.0
   warning-sound: "ENTITY_EXPERIENCE_ORB_PICKUP:0.8:1.2"
 

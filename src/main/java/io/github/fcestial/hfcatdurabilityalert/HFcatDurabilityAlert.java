@@ -1,5 +1,6 @@
 package io.github.fcestial.hfcatdurabilityalert;
 
+import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.List;
@@ -7,12 +8,13 @@ import java.util.List;
 /**
  * HFcatDurabilityAlert 插件主类
  *
- * 装备耐久度警告插件，基于 Paper 1.20.5+ 组件系统精确读取耐久。
+ * 装备耐久度警告插件，基于 Paper 1.20.5+ 组件系统精确读取耐久，
+ * 运行时兼容 Paper / Leaf / Purpur 等 Paper 系分支的 1.20.5 ~ 26.2（Java 21 与 Java 25 服务端均可）。
  *
  * 核心原理：
- * - 旧版 NBT Damage: short 已弃用，1.20.5+ 改用 minecraft:damage / minecraft:max_damage 组件
- * - Paper API 的 Damageable.getDamage() 返回已损失耐久（非剩余）
- * - Damageable.getMaxDamage() 自动读取 max_damage 组件（如 Stellarity 将铁头盔覆盖为 407）
+ * - 1.20.5 起旧版 NBT {@code Damage: short} 被组件 {@code minecraft:damage} / {@code minecraft:max_damage} 取代
+ * - Paper API 的 {@code Damageable.getDamage()} 返回「已损失」耐久（非剩余）
+ * - {@code Damageable.getMaxDamage()} 自动读取 max_damage 组件（如 Stellarity 把铁头盔覆盖为 407）
  * - 剩余耐久 = getMaxDamage() - getDamage()
  *
  * 触发机制：PlayerItemDamageEvent（精确到单次耐久扣减，无需轮询）
@@ -30,13 +32,22 @@ public class HFcatDurabilityAlert extends JavaPlugin {
     /** mending-only-warn-below 的禁用哨兵值（0 与 -1 均视为禁用） */
     public static final int NO_MENDING = -1;
 
+    /** 事件监听器（持有配置快照，reload 时刷新） */
+    private DurabilityListener listener;
+
     @Override
     public void onEnable() {
+        // 运行环境能力探测（正常情况下 plugin.yml 的 api-version=1.20.5 已挡住旧服务端）
+        if (!ensureRuntimeSupported()) {
+            return;
+        }
+
         saveDefaultConfig();
         validateConfig();
 
-        // 注册事件监听器
-        getServer().getPluginManager().registerEvents(new DurabilityListener(this), this);
+        // 注册事件监听器（构造时即建立配置快照）
+        listener = new DurabilityListener(this);
+        getServer().getPluginManager().registerEvents(listener, this);
 
         // 注册命令（executor 与 tabCompleter 复用同一无状态实例）
         var cmd = getCommand("hfcatdurabilityalert");
@@ -48,6 +59,9 @@ public class HFcatDurabilityAlert extends JavaPlugin {
 
         int thresholds = getConfig().getIntegerList("warnings.thresholds").size();
         getLogger().info("HFcatDurabilityAlert 已启用！共 " + thresholds + " 个警告阈值，监控装备耐久中...");
+        getLogger().info("运行环境: " + Bukkit.getName() + " " + Bukkit.getBukkitVersion()
+                + " (MC " + Bukkit.getMinecraftVersion() + ", Java " + System.getProperty("java.version") + ")"
+                + " | 声音解析: " + SoundResolver.mode());
     }
 
     @Override
@@ -59,7 +73,30 @@ public class HFcatDurabilityAlert extends JavaPlugin {
     public void reload() {
         reloadConfig();
         validateConfig();
+        if (listener != null) {
+            // 重建不可变配置快照，保证 reload 后事件链看到的是完整一致的新配置
+            listener.refresh();
+        }
         getLogger().info("配置已重载。");
+    }
+
+    /**
+     * 运行环境能力探测：本插件依赖 1.20.5 引入的组件化耐久 API。
+     * plugin.yml 的 api-version 已能拦住旧服务端，这里再兜一层，
+     * 避免某些分支绕过 api-version 校验后在事件链里抛 NoSuchMethodError。
+     *
+     * @return 环境可用时返回 true；不可用则自动停用插件并返回 false
+     */
+    private boolean ensureRuntimeSupported() {
+        try {
+            Class.forName("org.bukkit.inventory.meta.Damageable").getMethod("hasMaxDamage");
+            return true;
+        } catch (Throwable ignored) {
+            getLogger().severe("当前服务端缺少 1.20.5+ 组件化耐久 API（ItemMeta#hasMaxDamage），插件已自动停用。");
+            getLogger().severe("请使用 Paper / Leaf / Purpur 等 Paper 系服务端的 1.20.5 及以上版本。");
+            getServer().getPluginManager().disablePlugin(this);
+            return false;
+        }
     }
 
     /**
@@ -76,6 +113,8 @@ public class HFcatDurabilityAlert extends JavaPlugin {
             if (t < THRESHOLD_MIN || t > THRESHOLD_MAX) {
                 getLogger().warning("warnings.thresholds 中存在超出 " + THRESHOLD_MIN + "~" + THRESHOLD_MAX
                         + " 的阈值: " + t + "（将被忽略）");
+            } else if (t == 0) {
+                getLogger().warning("warnings.thresholds 中的阈值 0 永远不会触发（剩余耐久为 0 时物品已损坏）。");
             }
         }
 
@@ -101,8 +140,47 @@ public class HFcatDurabilityAlert extends JavaPlugin {
             }
         }
 
+        // 阈值原始值校验：getIntegerList 会静默丢弃非数字项（如 "abc"），这里显式提示，避免"配置写错却毫无反应"
+        List<?> rawThresholds = getConfig().getList("warnings.thresholds");
+        if (rawThresholds != null) {
+            for (Object raw : rawThresholds) {
+                if (raw instanceof Number) continue;
+                if (raw instanceof String str && isNumeric(str)) continue;
+                getLogger().warning("warnings.thresholds 中的条目 \"" + raw + "\" 不是数字，将被忽略。");
+            }
+        }
+
+        // 消息表校验：formats 写成 map 或结构错误时 getMapList 会返回空表，此时会退回内置默认文案
+        if (!thresholds.isEmpty() && getConfig().getMapList("messages.formats").isEmpty()) {
+            getLogger().warning("messages.formats 为空或结构不正确（应为列表，每项含 percent 与 message），"
+                    + "将使用内置默认文案。");
+        }
+
+        // 声音配置校验：无法解析时立即提示，避免运行期静默失效
+        String sound = getConfig().getString("messages.warning-sound", "");
+        if (sound != null && !sound.isBlank()) {
+            String name = SoundResolver.extractName(sound);
+            if (name.isEmpty()) {
+                getLogger().warning("messages.warning-sound=\"" + sound + "\" 缺少声音名，已忽略。");
+            } else if (SoundResolver.resolve(name) == null) {
+                getLogger().warning("messages.warning-sound=\"" + sound + "\" 无法在本服务端解析，将不会播放声音。"
+                        + "（1.20.5~1.21.3 只支持枚举名，如 ENTITY_EXPERIENCE_ORB_PICKUP；"
+                        + "1.21.4+ 也支持 entity.experience_orb.pickup 这类命名空间键）");
+            }
+        }
+
         if (getConfig().getBoolean("debug", false)) {
             getLogger().info("调试模式已开启。");
+        }
+    }
+
+    /** 字符串是否为数字（含小数/负数），用于阈值配置的友好提示 */
+    private static boolean isNumeric(String text) {
+        try {
+            Double.parseDouble(text.trim());
+            return true;
+        } catch (NumberFormatException ignored) {
+            return false;
         }
     }
 }
