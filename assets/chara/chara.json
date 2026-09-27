@@ -1,0 +1,20 @@
+{
+  "azusa": {
+    "key": "azusa",
+    "cn": "梓喵",
+    "full": "Azusa Nakano",
+    "native": "中野梓",
+    "alt": [
+      "あずさ",
+      "あずちゃん"
+    ],
+    "source": "K-ON!",
+    "source_native": "けいおん!",
+    "role": null,
+    "color": "#F06FA8",
+    "image": "azusa.png",
+    "anilist_id": 21173,
+    "anilist_url": "https://anilist.co/character/21173",
+    "file": "azusa.png"
+  }
+}

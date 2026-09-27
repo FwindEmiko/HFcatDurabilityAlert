@@ -1,0 +1,124 @@
+# HFcatDurabilityAlert README 配图规格（github-readme-anime 技能生成）
+# 风格：暗色科技风（琥珀警示色），仅保留一只看板猫作为点缀 —— 插件名就叫 HFcat
+# 重新生成：python ~/.dsh/skills/github-readme-anime/scripts/readme_build.py assets/spec.yml --assets-only --out-dir .
+lang: zh
+project: {name: HFcatDurabilityAlert, repo: FwindEmiko/HFcatDurabilityAlert}
+
+assets:
+  banner:
+    kind: banner
+    palette: hfcat
+    w: 1800
+    h: 460
+    bg_style: grid
+    seed: 5
+    title: HFcatDurabilityAlert
+    subtitle: 装备耐久度警告 · 直接读 1.20.5+ 数据组件，算得准
+    tagline: 零依赖 · 事件驱动 · 13 个服务端实测通过
+    title_size: 64
+    font: tech_b
+    stroke: 4
+    version: v1.2.0
+    badges: [MIT, Java 21, Folia]
+    mascot: false
+    bg_art:
+      image: assets/chara/azusa.png
+      scale: 1.85
+      opacity: 88
+      mono: true
+      mono_invert: true
+      fade_strength: 0.52
+      inset: 8
+
+  compat:
+    kind: tech
+    palette: hfcat
+    bg_style: dots
+    title: 服务端兼容矩阵
+    subtitle: 13 个服务端实机验证，同一份 jar 通吃
+    w: 1420
+    row_h: 86
+    font: sansb
+    groups:
+      - {label: Paper, items: ["1.20.5", "1.20.6", "1.21.1", "1.21.4", "1.21.8", "1.21.11", "26.1.2", "26.2"]}
+      - {label: Leaf, items: ["26.2"]}
+      - {label: Purpur, items: ["1.20.6", "1.21.8", "26.2"]}
+      - {label: Folia, items: ["26.2"]}
+      - {label: 不支持, items: [Spigot, CraftBukkit, "Paper < 1.20.5"]}
+
+  features:
+    kind: feature
+    palette: hfcat
+    bg_style: dots
+    title: 它解决什么问题
+    cols: 3
+    card_w: 430
+    card_h: 200
+    font: sansb
+    items:
+      - {icon: check, title: 算得准, desc: 直接读 damage / max_damage 组件，数据包改过耐久也不出错}
+      - {icon: bolt, title: 零轮询, desc: 事件驱动，只在耐久真正变化时触发，不吃 TPS}
+      - {icon: shield, title: 零依赖, desc: 只用 paper-api，不需要 Shadow 重打包}
+      - {icon: gear, title: 阈值随你配, desc: 档位数量不限，每个档位单独写文案与颜色}
+      - {icon: lock, title: PDC 防重复, desc: 每个档位只提醒一次，修好之后能重新触发}
+      - {icon: globe, title: 四端通吃, desc: Paper / Leaf / Purpur / Folia，一份 jar 全覆盖}
+
+  threshold:
+    kind: scale
+    palette: hfcat
+    bg_style: dots
+    title: 阈值怎么触发
+    subtitle: 一次伤害跨过多档时只提醒一档（取命中的最高档），45ms 去重防抖
+    w: 1240
+    row_h: 54
+    items:
+      - {at: 50, text: "耐久度已降至 50%　（琥珀色提示）", color: "#8FD14F"}
+      - {at: 30, text: "耐久度仅剩 30%　（转橙）", color: "#FFD166"}
+      - {at: 15, text: "耐久度仅剩 15%　（转橙红）", color: "#FFA23A"}
+      - {at: 10, text: "即将损坏！仅剩 10%", color: "#FF6B6B"}
+      - {at: 5, text: "马上要坏掉啦！仅剩 5%", color: "#E03131"}
+    note: 阈值与文案均在 config.yml 中可改，数量不限
+
+  art_why:
+    kind: art_header
+    palette: hfcat
+    w: 1500
+    h: 250
+    title: 为什么这件事值得单独做个插件
+    subtitle: 数据包能改写 max_damage，按物品类型估算必然算错
+    image: assets/chara/azusa.png
+    mono: true
+    mono_invert: true
+    art_opacity: 58
+    fade_strength: 0.5
+    art_scale: 1.8
+
+  art_install:
+    kind: art_header
+    palette: hfcat
+    w: 1500
+    h: 250
+    title: 一份 jar，13 个服务端
+    subtitle: Paper / Leaf / Purpur / Folia，1.20.5 ~ 26.2 实机验证
+    image: assets/chara/azusa.png
+    mono: true
+    mono_invert: true
+    art_opacity: 58
+    fade_strength: 0.5
+    art_scale: 1.8
+
+
+  quickstart:
+    kind: terminal
+    palette: hfcat
+    title: quickstart.sh
+    w: 1060
+    lines:
+      - {type: info, text: "服务端：Paper / Leaf / Purpur / Folia 1.20.5+"}
+      - {type: cmd, text: "cp HFcatDurabilityAlert-1.2.0.jar server/plugins/"}
+      - {type: out, text: "重启服务端…"}
+      - {type: ok, text: "[HFcatDurabilityAlert] 已启用（paper 1.21.8, 声音解析：注册表键）"}
+      - {type: cmd, text: "hdura status"}
+      - {type: out, text: "版本 1.2.0 ｜ 阈值 50/30/15/10/5 ｜ 冷却 -1 ｜ 频道 chat+actionbar"}
+      - {type: cmd, text: "hdura reload"}
+      - {type: ok, text: "配置已重载"}
