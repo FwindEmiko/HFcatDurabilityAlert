@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://cdn.jsdelivr.net/gh/FwindEmiko/HFcatDurabilityAlert@main/assets/banner.png" alt="HFcatDurabilityAlert" width="100%">
+<img src="https://cdn.jsdelivr.net/gh/FwindEmiko/HFcatDurabilityAlert@main/.github/assets/banner.png" alt="HFcatDurabilityAlert" width="100%">
 
 # HFcatDurabilityAlert
 
@@ -20,7 +20,7 @@
 
 ---
 
-<img src="https://cdn.jsdelivr.net/gh/FwindEmiko/HFcatDurabilityAlert@main/assets/art_why.png" alt="为什么" width="100%">
+<img src="https://cdn.jsdelivr.net/gh/FwindEmiko/HFcatDurabilityAlert@main/.github/assets/art_why.png" alt="为什么" width="100%">
 
 ## 为什么需要它
 
@@ -54,7 +54,7 @@ int left = max - ((Damageable) meta).getDamage();
 
 ## 兼容矩阵
 
-<img src="https://cdn.jsdelivr.net/gh/FwindEmiko/HFcatDurabilityAlert@main/assets/compat.png" alt="服务端兼容矩阵" width="100%">
+<img src="https://cdn.jsdelivr.net/gh/FwindEmiko/HFcatDurabilityAlert@main/.github/assets/compat.png" alt="服务端兼容矩阵" width="100%">
 
 **同一份 jar 通吃下列 13 个服务端**（2026-09 实机验证：加载 + 命令 + 重载均通过）：
 
@@ -77,7 +77,7 @@ int left = max - ((Damageable) meta).getDamage();
 
 ## 功能
 
-<img src="https://cdn.jsdelivr.net/gh/FwindEmiko/HFcatDurabilityAlert@main/assets/features.png" alt="功能" width="100%">
+<img src="https://cdn.jsdelivr.net/gh/FwindEmiko/HFcatDurabilityAlert@main/.github/assets/features.png" alt="功能" width="100%">
 
 - **阈值列表无限扩展** —— 每个档位可写独立文案与颜色
 - **三种输出通道** —— 聊天 / 动作栏 / Title 可独立开关，可配警告音效
@@ -92,7 +92,7 @@ int left = max - ((Damageable) meta).getDamage();
 
 ## 阈值是怎么触发的
 
-<img src="https://cdn.jsdelivr.net/gh/FwindEmiko/HFcatDurabilityAlert@main/assets/threshold.png" alt="阈值机制" width="100%">
+<img src="https://cdn.jsdelivr.net/gh/FwindEmiko/HFcatDurabilityAlert@main/.github/assets/threshold.png" alt="阈值机制" width="100%">
 
 ```yaml
 warnings:
@@ -111,11 +111,11 @@ warnings:
 
 ---
 
-<img src="https://cdn.jsdelivr.net/gh/FwindEmiko/HFcatDurabilityAlert@main/assets/art_install.png" alt="安装" width="100%">
+<img src="https://cdn.jsdelivr.net/gh/FwindEmiko/HFcatDurabilityAlert@main/.github/assets/art_install.png" alt="安装" width="100%">
 
 ## 安装
 
-<img src="https://cdn.jsdelivr.net/gh/FwindEmiko/HFcatDurabilityAlert@main/assets/quickstart.png" alt="快速开始" width="100%">
+<img src="https://cdn.jsdelivr.net/gh/FwindEmiko/HFcatDurabilityAlert@main/.github/assets/quickstart.png" alt="快速开始" width="100%">
 
 1. 确认服务端是 **Paper / Leaf / Purpur / Folia 1.20.5 及以上**
 2. 把 `HFcatDurabilityAlert-1.2.0.jar` 放进服务端 `plugins/` 目录

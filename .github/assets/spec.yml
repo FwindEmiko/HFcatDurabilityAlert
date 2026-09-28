@@ -1,6 +1,7 @@
 # HFcatDurabilityAlert README 配图规格（github-readme-anime 技能生成）
 # 风格：暗色科技风（琥珀警示色），仅保留一只看板猫作为点缀 —— 插件名就叫 HFcat
 # 重新生成：python ~/.dsh/skills/github-readme-anime/scripts/readme_build.py assets/spec.yml --assets-only --out-dir .
+assets_dir: .github/assets
 lang: zh
 project: {name: HFcatDurabilityAlert, repo: FwindEmiko/HFcatDurabilityAlert}
 
@@ -22,11 +23,11 @@ assets:
     badges: [MIT, Java 21, Folia]
     mascot: false
     bg_art:
-      image: assets/chara/azusa.png
+      image: .github/assets/chara/azusa.png
       scale: 1.85
-      opacity: 88
-      mono: true
-      mono_invert: true
+      opacity: 92
+      duotone: ["#2A3341", "#12161D"]
+      blur: 1.2
       fade_strength: 0.52
       inset: 8
 
@@ -86,10 +87,10 @@ assets:
     h: 250
     title: 为什么这件事值得单独做个插件
     subtitle: 数据包能改写 max_damage，按物品类型估算必然算错
-    image: assets/chara/azusa.png
-    mono: true
-    mono_invert: true
-    art_opacity: 58
+    image: .github/assets/chara/azusa.png
+    duotone: ["#2A3341", "#12161D"]
+    blur: 1.2
+    art_opacity: 94
     fade_strength: 0.5
     art_scale: 1.8
 
@@ -100,10 +101,10 @@ assets:
     h: 250
     title: 一份 jar，13 个服务端
     subtitle: Paper / Leaf / Purpur / Folia，1.20.5 ~ 26.2 实机验证
-    image: assets/chara/azusa.png
-    mono: true
-    mono_invert: true
-    art_opacity: 58
+    image: .github/assets/chara/azusa.png
+    duotone: ["#2A3341", "#12161D"]
+    blur: 1.2
+    art_opacity: 94
     fade_strength: 0.5
     art_scale: 1.8
 
