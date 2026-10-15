@@ -57,6 +57,14 @@
   - 测试方法论踩坑：装备槽 equipment.*.components 的 data modify 改不动耐久，必须用 Inventory[{Slot:0b}]；
     且物品持续被攻击/挖掘时写入会被同 tick 损害覆盖，写入前需暂停耐久消耗
   - Gradle wrapper 首次构建需联网下载 gradle-9.7.1-bin.zip（约 130MB），本机沙箱内下载曾失败；本地 Gradle 9.7.1 构建始终可用
+- **Paper 26.3 兼容性（2026-09-27 实测）**：26.3 已发布但处于 ALPHA 通道（26.2 是 STABLE），最低 Java 25，API 版本号 `26.3.build.49-alpha`。
+  结论：**无需改代码即可兼容**。证据：(1) API 符号矩阵——我们使用的 Bukkit/Adventure 符号在 26.3 全部存在；
+  (2) 未修改源码用 `paper-api:26.3.build.49-alpha` 经 Gradle 9.7.1 + JDK 25 编译 BUILD SUCCESSFUL（注意：26.3 API 只提供 Java 25 变体，
+  配 `options.release=21` 会导致 Gradle 变体解析失败，属工具链行为而非代码问题）；
+  (3) 真实 Paper 26.3-49 服务端：插件启用、`plugins/hdura status/hdura reload/help` 全正常、错误扫描为空；
+  (4) 运行期探针：`apiVersion(plugin.yml)=1.20.5` 被 26.3 接受、组件耐久语义一致（max=165/damage=100/remaining=65）、
+  `getItemTranslationKey=item.minecraft.iron_helmet`、`Registry.SOUND_EVENT=true`、声音三写法解析正常、`isOwnedByCurrentRegion` 存在。
+  限制：mineflayer 仅支持到 MC 26.1 协议，无法登录 26.3，故 26.3 未做玩家真实伤害端到端。
 - 第三轮独立复审（子代理 bc10f424）结论：无 BLOCKER；1 MAJOR + 9 MINOR + 7 NIT。已处理：
   - **MAJOR（文档夸大）**：README/DESIGN 原写「修复后重新告警」为实测，实际只观测到 `warn marker reset`（标记清除），重置后的第二次告警未复现
     → 已改为如实分列「修复后清除标记（已观测）」与「重置后再次告警（本轮未复现，由标记清除保证）」
